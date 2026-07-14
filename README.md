@@ -37,13 +37,55 @@ xcaddy build --with github.com/Hoverhuang-er/caddy-nacos-adapter
 ```
 
 Or download a pre-built binary from [Releases](https://github.com/Hoverhuang-er/caddy-nacos-adapter/releases).
-### 2. Prepare configuration
+### 2. Choose a configuration method
 
-You need two things: a **config file** (nacos.json) with Nacos server info, and **credentials** to authenticate with Nacos. These are independent — use either or both of the options below.
+#### Option A: Pure environment variable (no config file)
 
-#### Option A: nacos.json + CNA env var (recommended)
+Set the `CADDY_NACOS` env var with the full source in a single line:
+`{serverAddr}:{serverPort}:{dataIds}:{group}:{namespace}:{username}:{password}`
 
-Create a `nacos.json` file with server address, ports, and DATA_IDs. Credentials go into the `CNA` environment variable:
+```bash
+export CADDY_NACOS="127.0.0.1:8848:version,config:DEFAULT_GROUP:dev:admin:nacos"
+caddy run --adapter nacos
+# --config is not needed; nacos.json is not required
+```
+
+#### Option B: Pure nacos.json (no env vars)
+
+All config including credentials goes into `nacos.json`. No environment variables needed.
+
+```json
+// nacos.json — single source
+{
+  "serverAddr": "127.0.0.1",
+  "serverPort": 8848,
+  "username": "admin",
+  "password": "nacos",
+  "namespace": "dev",
+  "dataIds": ["version", "config", "config.admin"]
+}
+```
+
+Or multiple sources as an array:
+
+```json
+// nacos.json — multiple sources
+[
+  {
+    "serverAddr": "127.0.0.1",
+    "serverPort": 8848,
+    "namespace": "dev",
+    "username": "admin",
+    "password": "nacos",
+    "dataIds": ["version", "config"],
+    "group": "DEV_GROUP"
+  }
+]
+```
+
+#### Option C: Env var credentials + nacos.json (split approach)
+
+`nacos.json` contains the server config; credentials come from environment variables.
 
 ```bash
 # CNA: base64-encoded per-namespace credentials
@@ -62,43 +104,20 @@ export CNA=$(echo -n "dev:admin:nacos;prod:admin:nacos123" | base64)
 }
 ```
 
-#### Option B: nacos.json with inline credentials
+Other credential env vars you can use instead of (or alongside) `CNA`:
 
-```json
-// nacos.json - all config in one file, no env vars needed
-[
-  {
-    "serverAddr": "127.0.0.1",
-    "serverPort": 8848,
-    "namespace": "dev",
-    "username": "admin",
-    "password": "nacos",
-    "dataIds": ["version", "config"],
-    "group": "DEFAULT_GROUP"
-  }
-]
-```
-
-#### Option C: Environment variables only (no nacos.json)
-
-```bash
-export CADDY_NACOS="127.0.0.1:8848:version,config:DEFAULT_GROUP:dev:admin:nacos"
-caddy run --adapter nacos
-```
-
-Or use the granular env vars:
-
-```bash
-export CNA=$(echo -n "dev:admin:nacos" | base64)
-export CADDY_NACOS_USERNAME="admin"
-export CADDY_NACOS_PASSWORD="nacos"
-```
+| Env var | Description |
+|---------|-------------|
+| `CADDY_NACOS_NS_USERNAME` | Per-namespace usernames `ns1:user1;ns2:user2` |
+| `CADDY_NACOS_NS_PASSWORD` | Per-namespace passwords `ns1:pass1;ns2:pass2` |
+| `CADDY_NACOS_USERNAME` | Global username fallback |
+| `CADDY_NACOS_PASSWORD` | Global password fallback |
 
 ### 3. Run
 
 ```bash
-caddy run --adapter nacos --config ./nacos.json
-# (omit --config when using CADDY_NACOS env var or hardcoded config)
+caddy run --adapter nacos [--config ./nacos.json]
+# --config is required for Option B and C; omit for Option A
 ```
 
 ## Configuration
