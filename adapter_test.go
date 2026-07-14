@@ -381,6 +381,158 @@ func TestBuildConfig_WithApps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 多源配置解析测试
+// ---------------------------------------------------------------------------
+
+func TestParseConfigs_Single(t *testing.T) {
+	body := []byte(`{
+		"serverAddr": "10.0.0.1",
+		"serverPort": 8848,
+		"namespace": "dev",
+		"dataIds": ["config"],
+		"group": "MY_GROUP"
+	}`)
+
+	cfgs, err := parseConfigs(body)
+	if err != nil {
+		t.Fatal("解析单个配置失败:", err)
+	}
+	if len(cfgs) != 1 {
+		t.Fatalf("期望 1 个配置，得到 %d", len(cfgs))
+	}
+	if cfgs[0].ServerAddr != "10.0.0.1" {
+		t.Errorf("ServerAddr = %q, 期望 %q", cfgs[0].ServerAddr, "10.0.0.1")
+	}
+	if cfgs[0].Group != "MY_GROUP" {
+		t.Errorf("Group = %q, 期望 %q", cfgs[0].Group, "MY_GROUP")
+	}
+}
+
+func TestParseConfigs_Array(t *testing.T) {
+	body := []byte(`[
+		{
+			"serverAddr": "10.0.0.1",
+			"namespace": "dev",
+			"dataIds": ["config"],
+			"group": "DEV_GROUP"
+		},
+		{
+			"serverAddr": "10.0.0.2",
+			"namespace": "prod",
+			"dataIds": ["config", "config.apps"],
+			"group": "PROD_GROUP"
+		}
+	]`)
+
+	cfgs, err := parseConfigs(body)
+	if err != nil {
+		t.Fatal("解析配置数组失败:", err)
+	}
+	if len(cfgs) != 2 {
+		t.Fatalf("期望 2 个配置，得到 %d", len(cfgs))
+	}
+	if cfgs[0].Namespace != "dev" {
+		t.Errorf("cfgs[0].Namespace = %q, 期望 %q", cfgs[0].Namespace, "dev")
+	}
+	if cfgs[1].Namespace != "prod" {
+		t.Errorf("cfgs[1].Namespace = %q, 期望 %q", cfgs[1].Namespace, "prod")
+	}
+	if len(cfgs[1].DataIDs) != 2 {
+		t.Errorf("cfgs[1].DataIDs 长度 = %d, 期望 2", len(cfgs[1].DataIDs))
+	}
+}
+
+func TestParseConfigs_EmptyBody(t *testing.T) {
+	// 空 body 应返回默认配置
+	cfgs, err := parseConfigs(nil)
+	if err != nil {
+		t.Fatal("解析空 body 失败:", err)
+	}
+	if len(cfgs) != 1 {
+		t.Fatalf("期望 1 个默认配置，得到 %d", len(cfgs))
+	}
+	if cfgs[0].ServerAddr != "127.0.0.1" {
+		t.Errorf("默认 ServerAddr = %q, 期望 127.0.0.1", cfgs[0].ServerAddr)
+	}
+	if len(cfgs[0].DataIDs) == 0 {
+		t.Error("默认配置 dataIds 不应为空")
+	}
+}
+
+func TestBuildAndMergeConfigs_MultiSource(t *testing.T) {
+	// 两个 mock 源，分别提供不同的配置片段
+	client1 := &mockNacosClient{data: map[string]string{
+		"config": `{"admin": {"listen": ":2019"}}`,
+	}}
+	client2 := &mockNacosClient{data: map[string]string{
+		"config": `{"logging": {"logs": {"default": {"level": "info"}}}}`,
+	}}
+
+	sources := []nacosSource{
+		{client: client1, cfg: &AdapterConfig{
+			DataIDs: []string{"config"},
+			Group:   "DEFAULT_GROUP",
+		}},
+		{client: client2, cfg: &AdapterConfig{
+			DataIDs: []string{"config"},
+			Group:   "DEFAULT_GROUP",
+		}},
+	}
+
+	result, err := buildAndMergeConfigs(sources)
+	if err != nil {
+		t.Fatal("buildAndMergeConfigs 失败:", err)
+	}
+
+	var merged caddyConfigStub
+	if err := jsonv2.Unmarshal(result, &merged); err != nil {
+		t.Fatal("反序列化合并结果失败:", err)
+	}
+
+	if merged.Admin == nil || merged.Admin.Listen != ":2019" {
+		t.Error("缺少 admin 配置或 listen 错误")
+	}
+	if merged.Logging == nil || merged.Logging.Logs == nil {
+		t.Error("缺少 logging 配置")
+	}
+}
+
+func TestBuildAndMergeConfigs_Overwrite(t *testing.T) {
+	// 第二个源应覆盖第一个源的相同字段
+	client1 := &mockNacosClient{data: map[string]string{
+		"config": `{"admin": {"listen": ":2019"}}`,
+	}}
+	client2 := &mockNacosClient{data: map[string]string{
+		"config": `{"admin": {"listen": ":2096"}}`,
+	}}
+
+	sources := []nacosSource{
+		{client: client1, cfg: &AdapterConfig{
+			DataIDs: []string{"config"},
+			Group:   "DEFAULT_GROUP",
+		}},
+		{client: client2, cfg: &AdapterConfig{
+			DataIDs: []string{"config"},
+			Group:   "DEFAULT_GROUP",
+		}},
+	}
+
+	result, err := buildAndMergeConfigs(sources)
+	if err != nil {
+		t.Fatal("buildAndMergeConfigs 失败:", err)
+	}
+
+	var merged caddyConfigStub
+	if err := jsonv2.Unmarshal(result, &merged); err != nil {
+		t.Fatal("反序列化合并结果失败:", err)
+	}
+
+	if merged.Admin == nil || merged.Admin.Listen != ":2096" {
+		t.Errorf("期望 admin.listen = :2096 (第二个源覆盖), 得到 %q",
+			merged.Admin.Listen)
+	}
+}
+// ---------------------------------------------------------------------------
 // 测试辅助类型
 // ---------------------------------------------------------------------------
 

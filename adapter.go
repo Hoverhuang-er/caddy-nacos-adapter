@@ -197,7 +197,7 @@ type NacosConfig struct {
 	Group      string
 }
 
-// AdapterConfig 存储适配器的配置项。
+// AdapterConfig 存储单个 Nacos 源的配置项。
 type AdapterConfig struct {
 	ServerAddr string   `json:"serverAddr"`
 	ServerPort uint64   `json:"serverPort"`
@@ -206,6 +206,56 @@ type AdapterConfig struct {
 	Namespace  string   `json:"namespace,omitempty"`
 	DataIDs    []string `json:"dataIds"`
 	Group      string   `json:"group,omitempty"`
+}
+
+// nacosSource 连接一个 Nacos 客户端及其配置，用于多源管理。
+type nacosSource struct {
+	client clientInterface
+	cfg    *AdapterConfig
+}
+
+// parseConfigs 解析 body 为单个或数组形式的 Nacos 源配置列表。
+// body 可以是单个 AdapterConfig 对象或 AdapterConfig 数组。
+// 当 body 为空时，若 GetNacosConfig 已设置则生成单元素列表。
+func parseConfigs(body []byte) ([]*AdapterConfig, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		// 空 body，回退到 GetNacosConfig var func 或默认配置
+		if GetNacosConfig != nil {
+			nc := GetNacosConfig()
+			if nc != nil {
+				return []*AdapterConfig{{
+					ServerAddr: nc.ServerAddr,
+					ServerPort: nc.ServerPort,
+					Username:   nc.Username,
+					Password:   nc.Password,
+					DataIDs:    nc.DataIDs,
+					Group:      nc.Group,
+				}}, nil
+			}
+		}
+		return []*AdapterConfig{{
+			ServerAddr: "127.0.0.1",
+			ServerPort: 8848,
+			Group:      "DEFAULT_GROUP",
+			DataIDs:    []string{"version", "config"},
+		}}, nil
+	}
+
+	// 尝试解析为数组
+	var cfgs []*AdapterConfig
+	if err := jsonv2.Unmarshal(body, &cfgs); err == nil {
+		return cfgs, nil
+	}
+
+	// 尝试解析为单个对象
+	var cfg AdapterConfig
+	if err := jsonv2.Unmarshal(body, &cfg); err == nil {
+		if len(cfg.DataIDs) > 0 {
+			return []*AdapterConfig{&cfg}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无法解析 nacos.json: 期望单个配置对象或配置数组")
 }
 
 // fillFromNacosConfig 用 var func 提供的值覆盖配置中的空字段。
@@ -284,89 +334,130 @@ type Adapter struct{}
 var _ caddyconfig.Adapter = (*Adapter)(nil)
 
 // Adapt 从 Nacos 读取配置并返回 Caddy JSON。
-// 必须在环境中设置 CNA 环境变量。
+// body 可以是单个 AdapterConfig 对象或 AdapterConfig 数组，支持多 Nacos 源。
+// 必须在环境中设置 CNA 环境变量，或在配置中直接内联凭据。
 func (a Adapter) Adapt(body []byte, options map[string]any) (
 	[]byte, []caddyconfig.Warning, error,
 ) {
-	// CNA 环境变量为强制项
-	if os.Getenv(EnvNacosAuth) == "" {
-		return nil, nil, fmt.Errorf(
-			"CNA 环境变量必填: 设置 base64 编码的凭据 " +
-				"(格式: ns:user:pass;ns:user:pass)")
+	// 解析配置（单对象或数组）
+	configs, err := parseConfigs(body)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// 使用默认值构建配置
-	cfg := &AdapterConfig{
-		ServerAddr: "127.0.0.1",
-		ServerPort: 8848,
-		Group:      "DEFAULT_GROUP",
-		DataIDs:    []string{"version", "config"},
+	if len(configs) == 0 {
+		return nil, nil, fmt.Errorf("Nacos 配置列表为空，请检查 nacos.json")
 	}
 
-	// 应用 var func 覆写（如果已设置）
-	if GetNacosConfig != nil {
-		nc := GetNacosConfig()
-		if nc != nil {
-			cfg.fillFromNacosConfig(nc)
+	// 是否有内联凭据（直接在配置中写了 username/password）？
+	hasInlineCreds := false
+	for _, cfg := range configs {
+		if cfg.Username != "" && cfg.Password != "" {
+			hasInlineCreds = true
+			break
 		}
 	}
 
-	// 解析 namespace
-	namespace := resolveNamespace(cfg.Namespace)
-
-	// 从 CNA 环境变量中解析凭据（已在前面检查过必须存在）
-	if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
-		cfg.Username = user
-		cfg.Password = pass
-	} else {
+	// 仅当没有任何内联凭据时才需要 CNA 环境变量
+	if !hasInlineCreds && os.Getenv(EnvNacosAuth) == "" {
 		return nil, nil, fmt.Errorf(
-			"CNA 环境变量中未找到 namespace %q 对应的凭据", namespace)
+			"CNA 环境变量或配置内联凭据必填: " +
+				"设置 base64 编码的凭据 (ns:user:pass;ns:user:pass)")
 	}
 
-	logger.Info("Nacos 适配器启动",
-		"server", net.JoinHostPort(
-			cfg.ServerAddr, strconv.Itoa(int(cfg.ServerPort))),
-		"namespace", namespace,
-		"dataIds", cfg.DataIDs,
-		"group", cfg.Group,
-	)
+	// 应用 var func 覆写（仅对未内联凭据且未指定 serverAddr 的条目生效）
+	varGetNacosConfig := (GetNacosConfig != nil && GetNacosConfig() != nil)
 
-	// 创建 Nacos 配置客户端
-	clientConfig := constant.ClientConfig{
-		NamespaceId:         namespace,
-		TimeoutMs:           5000,
-		NotLoadCacheAtStart: true,
-		LogDir:              os.TempDir() + "/nacos-log",
-		CacheDir:            os.TempDir() + "/nacos-cache",
-		LogLevel:            "warn",
-		Username:            cfg.Username,
-		Password:            cfg.Password,
-	}
-	serverConfigs := []constant.ServerConfig{
-		{
-			IpAddr: cfg.ServerAddr,
-			Port:   cfg.ServerPort,
-		},
+	// 构建每个源的 Nacos 客户端
+	var sources []nacosSource
+	for i, cfg := range configs {
+		// 应用 var func 默认值
+		if varGetNacosConfig {
+			nc := GetNacosConfig()
+			cfg.fillFromNacosConfig(nc)
+		}
+
+		// 解析 namespace
+		namespace := resolveNamespace(cfg.Namespace)
+
+		// 从 CNA 环境变量中解析凭据（仅当未内联时）
+		if cfg.Username == "" || cfg.Password == "" {
+			if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
+				cfg.Username = user
+				cfg.Password = pass
+			}
+		}
+
+		if cfg.Username == "" || cfg.Password == "" {
+			return nil, nil, fmt.Errorf(
+				"源 #%d (namespace=%q): 未找到凭据，请检查 CNA 环境变量或配置内联",
+				i+1, namespace)
+		}
+
+		if cfg.ServerAddr == "" {
+			cfg.ServerAddr = "127.0.0.1"
+		}
+		if cfg.ServerPort == 0 {
+			cfg.ServerPort = 8848
+		}
+		if len(cfg.DataIDs) == 0 {
+			return nil, nil, fmt.Errorf(
+				"源 #%d (namespace=%q): dataIds 不能为空",
+				i+1, namespace)
+		}
+		if cfg.Group == "" {
+			cfg.Group = "DEFAULT_GROUP"
+		}
+
+		logger.Info("Nacos 适配器源",
+			"source", i+1,
+			"server", net.JoinHostPort(
+				cfg.ServerAddr, strconv.Itoa(int(cfg.ServerPort))),
+			"namespace", namespace,
+			"dataIds", cfg.DataIDs,
+			"group", cfg.Group,
+		)
+
+		// 创建 Nacos 配置客户端
+		clientConfig := constant.ClientConfig{
+			NamespaceId:         namespace,
+			TimeoutMs:           5000,
+			NotLoadCacheAtStart: true,
+			LogDir:              os.TempDir() + "/nacos-log",
+			CacheDir:            os.TempDir() + "/nacos-cache",
+			LogLevel:            "warn",
+			Username:            cfg.Username,
+			Password:            cfg.Password,
+		}
+		serverConfigs := []constant.ServerConfig{
+			{
+				IpAddr: cfg.ServerAddr,
+				Port:   cfg.ServerPort,
+			},
+		}
+
+		client, err := clients.NewConfigClient(
+			vo.NacosClientParam{
+				ClientConfig:  &clientConfig,
+				ServerConfigs: serverConfigs,
+			},
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"创建 Nacos 客户端失败 (源 #%d): %w", i+1, err)
+		}
+
+		sources = append(sources, nacosSource{client: client, cfg: cfg})
 	}
 
-	client, err := clients.NewConfigClient(
-		vo.NacosClientParam{
-			ClientConfig:  &clientConfig,
-			ServerConfigs: serverConfigs,
-		},
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("创建 Nacos 配置客户端失败: %w", err)
-	}
-
-	// 构建初始配置
-	configJSON, err := buildConfig(client, cfg.DataIDs, cfg.Group)
+	// 构建并合并所有源的配置
+	configJSON, err := buildAndMergeConfigs(sources)
 	if err != nil {
 		return nil, nil, fmt.Errorf("从 Nacos 构建配置失败: %w", err)
 	}
 
 	// 启动热加载监听器
-	startListeners(client, cfg, configJSON)
+	startListeners(sources, configJSON)
 
 	return configJSON, nil, nil
 }
@@ -526,6 +617,78 @@ func buildConfig(
 	return jsonv2.Marshal(config)
 }
 
+// buildAndMergeConfigs 遍历所有 Nacos 源，构建并合并配置。
+// 后面的源会覆盖前面源的相同键。
+func buildAndMergeConfigs(sources []nacosSource) ([]byte, error) {
+	var merged *caddy.Config
+
+	for _, src := range sources {
+		configJSON, err := buildConfig(src.client, src.cfg.DataIDs, src.cfg.Group)
+		if err != nil {
+			logger.Error("从 Nacos 构建配置失败",
+				"namespace", src.cfg.Namespace,
+				"error", err)
+			continue
+		}
+
+		if merged == nil {
+			var cfg caddy.Config
+			if err := jsonv2.Unmarshal(configJSON, &cfg); err != nil {
+				logger.Error("反序列化配置失败", "error", err)
+				continue
+			}
+			merged = &cfg
+			continue
+		}
+
+		// 合并：将新配置合并到已存在的 merged 中
+		var partial caddy.Config
+		if err := jsonv2.Unmarshal(configJSON, &partial); err != nil {
+			logger.Error("反序列化部分配置失败", "error", err)
+			continue
+		}
+
+		// 合并 Admin
+		if partial.Admin != nil {
+			if merged.Admin == nil {
+				merged.Admin = &caddy.AdminConfig{}
+			}
+			patch, _ := jsonv2.Marshal(partial.Admin)
+			jsonv2.Unmarshal(patch, merged.Admin)
+		}
+
+		// 合并 Logging
+		if partial.Logging != nil {
+			if merged.Logging == nil {
+				merged.Logging = &caddy.Logging{}
+			}
+			patch, _ := jsonv2.Marshal(partial.Logging)
+			jsonv2.Unmarshal(patch, merged.Logging)
+		}
+
+		// 合并 StorageRaw
+		if partial.StorageRaw != nil {
+			merged.StorageRaw = partial.StorageRaw
+		}
+
+		// 合并 AppsRaw
+		if partial.AppsRaw != nil {
+			if merged.AppsRaw == nil {
+				merged.AppsRaw = caddy.ModuleMap{}
+			}
+			for k, v := range partial.AppsRaw {
+				merged.AppsRaw[k] = v
+			}
+		}
+	}
+
+	if merged == nil {
+		return jsonv2.Marshal(caddy.Config{})
+	}
+
+	return jsonv2.Marshal(merged)
+}
+
 // clientInterface 抽象了 Nacos 配置客户端，便于测试时使用 mock。
 type clientInterface interface {
 	GetConfig(param vo.ConfigParam) (string, error)
@@ -577,65 +740,74 @@ var reloadMu sync.Mutex
 // lastConfigJSON 缓存上次成功加载的配置，避免冗余重载。
 var lastConfigJSON []byte
 
-// startListeners 在所有 DATA_ID 上注册 Nacos 推送监听器。
+// startListeners 在所有源的所有 DATA_ID 上注册 Nacos 推送监听器。
+// 当任一源发生配置变更时，从全部源重新构建并合并配置。
 func startListeners(
-	client clientInterface,
-	cfg *AdapterConfig,
+	sources []nacosSource,
 	initialConfig []byte,
 ) {
 	lastConfigJSON = initialConfig
 
-	for _, dataID := range cfg.DataIDs {
-		did := dataID // 在闭包中捕获
-		go func() {
-			err := client.ListenConfig(vo.ConfigParam{
-				DataId: did,
-				Group:  cfg.Group,
-				OnChange: func(
-					namespace, group, dataId, data string,
-				) {
-					logger.Info("Nacos 配置已变更",
-						"dataId", dataId,
-						"group", group,
-						"namespace", namespace,
-					)
+	for idx, src := range sources {
+		client := src.client
+		cfg := src.cfg
+		sourceIdx := idx
 
-					reloadMu.Lock()
-					defer reloadMu.Unlock()
+		for _, dataID := range cfg.DataIDs {
+			did := dataID // 在闭包中捕获
+			go func() {
+				err := client.ListenConfig(vo.ConfigParam{
+					DataId: did,
+					Group:  cfg.Group,
+					OnChange: func(
+						namespace, group, dataId, data string,
+					) {
+						logger.Info("Nacos 配置已变更",
+							"source", sourceIdx,
+							"dataId", dataId,
+							"group", group,
+							"namespace", namespace,
+						)
 
-					newConfig, err := buildConfig(
-						client, cfg.DataIDs, cfg.Group)
-					if err != nil {
-						logger.Error(
-							"从 Nacos 重新构建配置失败",
-							"error", err)
-						return
-					}
+						reloadMu.Lock()
+						defer reloadMu.Unlock()
 
-					if bytes.Equal(newConfig, lastConfigJSON) {
-						logger.Debug("配置未变化，跳过重载")
-						return
-					}
+						// 从所有源重新构建并合并
+						newConfig, err := buildAndMergeConfigs(sources)
+						if err != nil {
+							logger.Error(
+								"从 Nacos 重新构建配置失败",
+								"error", err)
+							return
+						}
 
-					if err := caddy.Load(newConfig, false); err != nil {
-						logger.Error("caddy.Load 失败", "error", err)
-						return
-					}
+						if bytes.Equal(newConfig, lastConfigJSON) {
+							logger.Debug("配置未变化，跳过重载")
+							return
+						}
 
-					lastConfigJSON = newConfig
-					logger.Info("Caddy 配置已从 Nacos 热重载",
-						"dataId", dataId,
-						"version", getVersionDisplay(
-							client, cfg.Group),
-					)
-				},
-			})
-			if err != nil {
-				logger.Error(
-					"监听 Nacos 配置失败",
-					"dataId", did, "error", err)
-			}
-		}()
+						if err := caddy.Load(newConfig, false); err != nil {
+							logger.Error(
+								"caddy.Load 失败",
+								"error", err)
+							return
+						}
+
+						lastConfigJSON = newConfig
+						logger.Info("Caddy 配置已从 Nacos 热重载",
+							"source", sourceIdx,
+							"dataId", dataId,
+						)
+					},
+				})
+				if err != nil {
+					logger.Error(
+						"监听 Nacos 配置失败",
+						"source", sourceIdx,
+						"dataId", did, "error", err)
+				}
+			}()
+		}
 	}
 }
 

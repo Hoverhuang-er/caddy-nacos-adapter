@@ -88,11 +88,42 @@ caddy run --adapter nacos --config ./nacos.json
 |-------|------|---------|-------------|
 | `serverAddr` | string | `"127.0.0.1"` | Nacos server address |
 | `serverPort` | uint64 | `8848` | Nacos server port |
-| `username` | string | from `CNA` | Nacos username |
-| `password` | string | from `CNA` | Nacos password |
+| `username` | string | from `CNA` or inline | Nacos username |
+| `password` | string | from `CNA` or inline | Nacos password |
 | `namespace` | string | auto | `"auto"`/`""` → win: `prod`, else `dev`; `"public"`/`"PUBLIC"` → `""` |
 | `dataIds` | []string | — | List of DATA_IDs to load and watch |
 | `group` | string | `"DEFAULT_GROUP"` | Nacos config group |
+
+### Multi-Tenant: Multiple Nacos Sources
+
+For deployments with multiple Nacos namespaces or servers, pass an array of configurations:
+
+```json
+[
+  {
+    "serverAddr": "127.0.0.1",
+    "serverPort": 8848,
+    "namespace": "dev",
+    "username": "admin",
+    "password": "nacos",
+    "dataIds": ["config", "config.admin"],
+    "group": "DEV_GROUP"
+  },
+  {
+    "serverAddr": "10.0.0.100",
+    "serverPort": 8848,
+    "namespace": "prod",
+    "username": "admin",
+    "password": "nacos123",
+    "dataIds": ["config", "config.apps"],
+    "group": "PROD_GROUP"
+  }
+]
+```
+
+Each source can point to a different Nacos server, namespace, or group. Configs from all sources are merged — later sources override earlier ones for the same keys (e.g., `admin`, `logging`, `apps`). Apps from different sources are merged at the top level.
+
+Credentials can be provided inline (as shown above) or via the `CNA` environment variable. If inline credentials are present for any source, the `CNA` env var becomes optional.
 
 ### Namespace Resolution
 
