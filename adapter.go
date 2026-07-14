@@ -292,6 +292,16 @@ func init() {
 // 解码后格式: ns1:username1:password1;ns2:username2:password2
 const EnvNacosAuth = "CNA"
 
+// EnvNacosNSUsername 是 namespace 级别的用户名环境变量。
+// 格式: ns1:username1;ns2:username2
+// 当 CNA 未设置时作为回退。
+const EnvNacosNSUsername = "CADDY_NACOS_NS_USERNAME"
+
+// EnvNacosNSPassword 是 namespace 级别的密码环境变量。
+// 格式: ns1:password1;ns2:password2
+// 与 EnvNacosNSUsername 成对使用。
+const EnvNacosNSPassword = "CADDY_NACOS_NS_PASSWORD"
+
 // resolveCredentialsFromEnv 解码并解析 CNA 环境变量，
 // 返回与指定 namespace 匹配的用户名和密码。
 func resolveCredentialsFromEnv(
@@ -328,6 +338,56 @@ func resolveCredentialsFromEnv(
 	return "", "", false
 }
 
+// resolveCredentialsFromNSEnv 从 CADDY_NACOS_NS_USERNAME 和
+// CADDY_NACOS_NS_PASSWORD 环境变量中，查找指定 namespace 的用户名和密码。
+// 当 CNA 未设置时作为回退。
+func resolveCredentialsFromNSEnv(
+	namespace string,
+) (username, password string, ok bool) {
+	rawUser := os.Getenv(EnvNacosNSUsername)
+	rawPass := os.Getenv(EnvNacosNSPassword)
+	if rawUser == "" || rawPass == "" {
+		return "", "", false
+	}
+
+	// 解析用户名: ns1:user1;ns2:user2
+	var foundUser string
+	for _, pair := range strings.Split(rawUser, ";") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[0] == namespace {
+			foundUser = parts[1]
+			break
+		}
+	}
+	if foundUser == "" {
+		return "", "", false
+	}
+
+	// 解析密码: ns1:pass1;ns2:pass2
+	for _, pair := range strings.Split(rawPass, ";") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[0] == namespace {
+			return foundUser, parts[1], true
+		}
+	}
+
+	return "", "", false
+}
+
 // Adapter 实现了 caddyconfig.Adapter 接口，用于 Nacos 配置适配。
 type Adapter struct{}
 
@@ -357,12 +417,16 @@ func (a Adapter) Adapt(body []byte, options map[string]any) (
 			break
 		}
 	}
+	// 是否至少有一种外部凭据源可用（内联 / CNA / NS_USERNAME+NS_PASSWORD）
+	hasExtCreds := hasInlineCreds ||
+		os.Getenv(EnvNacosAuth) != "" ||
+		(os.Getenv(EnvNacosNSUsername) != "" && os.Getenv(EnvNacosNSPassword) != "")
 
-	// 仅当没有任何内联凭据时才需要 CNA 环境变量
-	if !hasInlineCreds && os.Getenv(EnvNacosAuth) == "" {
+	if !hasExtCreds {
 		return nil, nil, fmt.Errorf(
-			"CNA 环境变量或配置内联凭据必填: " +
-				"设置 base64 编码的凭据 (ns:user:pass;ns:user:pass)")
+			"未找到任何 Nacos 凭据: 请设置 CNA 环境变量 (ns:user:pass;ns:user:pass), " +
+				"或 " + EnvNacosNSUsername + "+" + EnvNacosNSPassword +
+				" 环境变量, 或在 nacos.json 中内联 username/password")
 	}
 
 	// 应用 var func 覆写（仅对未内联凭据且未指定 serverAddr 的条目生效）
@@ -380,9 +444,17 @@ func (a Adapter) Adapt(body []byte, options map[string]any) (
 		// 解析 namespace
 		namespace := resolveNamespace(cfg.Namespace)
 
-		// 从 CNA 环境变量中解析凭据（仅当未内联时）
+		// 凭据解析链: 内联 > CNA > CADDY_NACOS_NS_USERNAME+CADDY_NACOS_NS_PASSWORD
 		if cfg.Username == "" || cfg.Password == "" {
+			// 第二优先级: CNA 环境变量
 			if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
+				cfg.Username = user
+				cfg.Password = pass
+			}
+		}
+		if cfg.Username == "" || cfg.Password == "" {
+			// 第三优先级: CADDY_NACOS_NS_USERNAME + CADDY_NACOS_NS_PASSWORD
+			if user, pass, ok := resolveCredentialsFromNSEnv(namespace); ok {
 				cfg.Username = user
 				cfg.Password = pass
 			}
@@ -390,9 +462,11 @@ func (a Adapter) Adapt(body []byte, options map[string]any) (
 
 		if cfg.Username == "" || cfg.Password == "" {
 			return nil, nil, fmt.Errorf(
-				"源 #%d (namespace=%q): 未找到凭据，请检查 CNA 环境变量或配置内联",
-				i+1, namespace)
+				"源 #%d (namespace=%q): 未找到凭据, 请检查 CNA / %s / %s 或内联配置",
+				i+1, namespace,
+				EnvNacosNSUsername, EnvNacosNSPassword)
 		}
+
 
 		if cfg.ServerAddr == "" {
 			cfg.ServerAddr = "127.0.0.1"
