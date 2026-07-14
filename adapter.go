@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/BurntSushi/toml"
 	"github.com/caddyserver/caddy/v2"
@@ -922,28 +921,55 @@ func getOptionalConfigValues(
 	}
 	return []string{val}, true
 }
-
-// mu 保护来自多个 Nacos 回调的并发重载。
-var reloadMu sync.Mutex
+// reloadCh 是配置热重载的信号通道，容量 = 多源数量。
+var reloadCh chan struct{}
 
 // lastConfigJSON 缓存上次成功加载的配置，避免冗余重载。
 var lastConfigJSON []byte
 
 // startListeners 在所有源的所有 DATA_ID 上注册 Nacos 推送监听器。
-// 当任一源发生配置变更时，从全部源重新构建并合并配置。
+// 使用 channel 进行热重载编排，channel 容量 = 源数量 (cap = len(sources))。
 func startListeners(
 	sources []nacosSource,
 	initialConfig []byte,
 ) {
 	lastConfigJSON = initialConfig
 
+	// 创建 buffered channel，容量 = 多源数量，避免并发回调阻塞
+	reloadCh = make(chan struct{}, len(sources))
+
+	// 启动独立的 reload goroutine，串行处理热重载请求
+	go func() {
+		for range reloadCh {
+			newConfig, err := buildAndMergeConfigs(sources)
+			if err != nil {
+				logger.Error("从 Nacos 重新构建配置失败", "error", err)
+				continue
+			}
+
+			if bytes.Equal(newConfig, lastConfigJSON) {
+				logger.Debug("配置未变化，跳过重载")
+				continue
+			}
+
+			if err := caddy.Load(newConfig, false); err != nil {
+				logger.Error("caddy.Load 失败", "error", err)
+				continue
+			}
+
+			lastConfigJSON = newConfig
+			logger.Info("Caddy 配置已从 Nacos 热重载")
+		}
+	}()
+
+	// 为每个源的每个 DATA_ID 注册 Nacos 监听器
 	for idx, src := range sources {
 		client := src.client
 		cfg := src.cfg
 		sourceIdx := idx
 
 		for _, dataID := range cfg.DataIDs {
-			did := dataID // 在闭包中捕获
+			did := dataID
 			go func() {
 				err := client.ListenConfig(vo.ConfigParam{
 					DataId: did,
@@ -958,35 +984,16 @@ func startListeners(
 							"namespace", namespace,
 						)
 
-						reloadMu.Lock()
-						defer reloadMu.Unlock()
-
-						// 从所有源重新构建并合并
-						newConfig, err := buildAndMergeConfigs(sources)
-						if err != nil {
-							logger.Error(
-								"从 Nacos 重新构建配置失败",
-								"error", err)
-							return
+						// 发送重载信号到 channel (非阻塞)
+						select {
+						case reloadCh <- struct{}{}:
+						default:
+							// channel 满时表示已有待处理重载，跳过
+							logger.Debug("重载队列已满，跳过信号",
+								"source", sourceIdx,
+								"dataId", dataId,
+							)
 						}
-
-						if bytes.Equal(newConfig, lastConfigJSON) {
-							logger.Debug("配置未变化，跳过重载")
-							return
-						}
-
-						if err := caddy.Load(newConfig, false); err != nil {
-							logger.Error(
-								"caddy.Load 失败",
-								"error", err)
-							return
-						}
-
-						lastConfigJSON = newConfig
-						logger.Info("Caddy 配置已从 Nacos 热重载",
-							"source", sourceIdx,
-							"dataId", dataId,
-						)
 					},
 				})
 				if err != nil {
