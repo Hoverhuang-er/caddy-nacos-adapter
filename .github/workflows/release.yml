@@ -47,12 +47,13 @@ jobs:
       - name: Prepare archive
         shell: bash
         run: |
-          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          DIR="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          BINARY="$DIR"
           [ "${{ matrix.os }}" = "windows" ] && BINARY="${BINARY}.exe"
-          mkdir -p "dist/${BINARY}"
-          cp "$BINARY" "dist/${BINARY}/"
-          cp README.md "dist/${BINARY}/"
-          echo "Caddy Nacos Config Adapter ${GITHUB_REF_NAME}" > "dist/${BINARY}/VERSION"
+          mkdir -p "dist/${DIR}"
+          cp "$BINARY" "dist/${DIR}/"
+          cp README.md "dist/${DIR}/"
+          echo "Caddy Nacos Config Adapter ${GITHUB_REF_NAME}" > "dist/${DIR}/VERSION"
 
       - name: Package (tar.gz)
         if: matrix.os != 'windows'
