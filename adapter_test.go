@@ -532,6 +532,70 @@ func TestBuildAndMergeConfigs_Overwrite(t *testing.T) {
 			merged.Admin.Listen)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CNA 字符串解析测试
+// ---------------------------------------------------------------------------
+
+func TestResolveCNAString_Base64(t *testing.T) {
+	// base64 编码: dev:admin:nacos
+	encoded := "ZGV2OmFkbWluOm5hY29z"
+	user, pass, ok := resolveCNAString(encoded, "dev")
+	if !ok {
+		t.Fatal("resolveCNAString 应成功")
+	}
+	if user != "admin" {
+		t.Errorf("user = %q, 期望 admin", user)
+	}
+	if pass != "nacos" {
+		t.Errorf("pass = %q, 期望 nacos", pass)
+	}
+}
+
+func TestResolveCNAString_Plain(t *testing.T) {
+	// 明文格式
+	user, pass, ok := resolveCNAString("dev:admin:nacos;prod:root:pass123", "prod")
+	if !ok {
+		t.Fatal("resolveCNAString 应成功")
+	}
+	if user != "root" {
+		t.Errorf("user = %q, 期望 root", user)
+	}
+	if pass != "pass123" {
+		t.Errorf("pass = %q, 期望 pass123", pass)
+	}
+}
+
+func TestResolveCNAString_NotFound(t *testing.T) {
+	_, _, ok := resolveCNAString("dev:admin:nacos", "prod")
+	if ok {
+		t.Fatal("resolveCNAString 应失败 (namespace 不匹配)")
+	}
+}
+
+func TestResolveCNAString_Empty(t *testing.T) {
+	_, _, ok := resolveCNAString("", "dev")
+	if ok {
+		t.Fatal("resolveCNAString 应失败 (空字符串)")
+	}
+}
+
+func TestResolveCredentialsFromConfigCNA(t *testing.T) {
+	cfg := &AdapterConfig{
+		Namespace: "staging",
+		CNA: "c3RhZ2luZzp1c2VyOnNlY3JldA==",
+	}
+	user, pass, ok := resolveCredentialsFromConfigCNA(cfg)
+	if !ok {
+		t.Fatal("resolveCredentialsFromConfigCNA 应成功")
+	}
+	if user != "user" {
+		t.Errorf("user = %q, 期望 user", user)
+	}
+	if pass != "secret" {
+		t.Errorf("pass = %q, 期望 secret", pass)
+	}
+}
 // ---------------------------------------------------------------------------
 // 测试辅助类型
 // ---------------------------------------------------------------------------
