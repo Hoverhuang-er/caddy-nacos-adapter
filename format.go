@@ -11,17 +11,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ConfigFormat represents the detected configuration format.
+// ConfigFormat 表示检测到的配置格式类型。
 type ConfigFormat int
 
 const (
-	FormatJSON ConfigFormat = iota
-	FormatYAML
-	FormatTOML
-	FormatCaddyfile
+	FormatJSON      ConfigFormat = iota // JSON 格式
+	FormatYAML                          // YAML 格式
+	FormatTOML                          // TOML 格式
+	FormatCaddyfile                     // Caddyfile 格式
 )
 
-// detectFormat detects the configuration format from the raw content string.
+// detectFormat 从原始内容字符串中检测配置格式。
 func detectFormat(data string) ConfigFormat {
 	trimmed := strings.TrimSpace(data)
 	if trimmed == "" {
@@ -30,26 +30,28 @@ func detectFormat(data string) ConfigFormat {
 
 	first := trimmed[0]
 
-	// When the content starts with { or [, it could be JSON or a Caddyfile/TOML.
-	// Validate as JSON to disambiguate.
+	// 当内容以 { 或 [ 开头时，可能是 JSON、Caddyfile 或 TOML。
+	// 先尝试用 JSON 解析来区分。
 	if first == '{' || first == '[' {
 		if json.Valid([]byte(trimmed)) {
 			return FormatJSON
 		}
-		// Invalid JSON starting with { → Caddyfile global options block
+		// 以 { 开头的无效 JSON → Caddyfile 全局选项块
 		if first == '{' {
 			return FormatCaddyfile
 		}
-		// Invalid JSON starting with [ → TOML table header
+		// 以 [ 开头的无效 JSON → TOML 表头
 		return FormatTOML
 	}
 
 	lines := strings.SplitN(trimmed, "\n", 10)
 
-	// TOML: first non-empty line starts with [...] or contains key = value
+	// TOML: 首个非空行以 [...] 开头或包含 key = value
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+		if line == "" ||
+			strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, "//") {
 			continue
 		}
 		if strings.HasPrefix(line, "[") {
@@ -61,10 +63,12 @@ func detectFormat(data string) ConfigFormat {
 		break
 	}
 
-	// YAML: contains "key: value" pattern in first content line
+	// YAML: 首个内容行包含 "key: value" 模式
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+		if line == "" ||
+			strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, "//") {
 			continue
 		}
 		if strings.Contains(line, ": ") || strings.HasSuffix(line, ":") {
@@ -73,11 +77,11 @@ func detectFormat(data string) ConfigFormat {
 		break
 	}
 
-	// Everything else is treated as Caddyfile
+	// 其他情况均视为 Caddyfile
 	return FormatCaddyfile
 }
 
-// convertToJSON converts config data in any supported format to Caddy JSON bytes.
+// convertToJSON 将任意支持格式的配置内容转换为 Caddy JSON 字节。
 func convertToJSON(data string, logger *slog.Logger) ([]byte, error) {
 	format := detectFormat(data)
 
@@ -87,57 +91,58 @@ func convertToJSON(data string, logger *slog.Logger) ([]byte, error) {
 		if trimmed == "" {
 			return []byte{}, nil
 		}
-		// Validate it's valid JSON
+		// 验证为合法 JSON
 		var raw json.RawMessage
 		if err := json.Unmarshal([]byte(data), &raw); err != nil {
-			return nil, fmt.Errorf("invalid JSON: %w", err)
+			return nil, fmt.Errorf("无效 JSON: %w", err)
 		}
 		return raw, nil
 
 	case FormatYAML:
 		var parsed any
 		if err := yaml.Unmarshal([]byte(data), &parsed); err != nil {
-			return nil, fmt.Errorf("invalid YAML: %w", err)
+			return nil, fmt.Errorf("无效 YAML: %w", err)
 		}
-		// Clean up YAML-native types to JSON-safe ones
+		// 将 YAML 原生类型转换为 JSON 安全类型
 		parsed = yamlToJSONSafe(parsed)
 		result, err := json.Marshal(parsed)
 		if err != nil {
-			return nil, fmt.Errorf("YAML to JSON marshal: %w", err)
+			return nil, fmt.Errorf("YAML 转 JSON 序列化失败: %w", err)
 		}
 		return result, nil
 
 	case FormatTOML:
 		var parsed map[string]any
 		if _, err := toml.Decode(data, &parsed); err != nil {
-			return nil, fmt.Errorf("invalid TOML: %w", err)
+			return nil, fmt.Errorf("无效 TOML: %w", err)
 		}
 		result, err := json.Marshal(parsed)
 		if err != nil {
-			return nil, fmt.Errorf("TOML to JSON marshal: %w", err)
+			return nil, fmt.Errorf("TOML 转 JSON 序列化失败: %w", err)
 		}
 		return result, nil
 
 	case FormatCaddyfile:
 		adapter := caddyconfig.GetAdapter("caddyfile")
 		if adapter == nil {
-			return nil, fmt.Errorf("caddyfile adapter not available")
+			return nil, fmt.Errorf("Caddyfile 适配器不可用")
 		}
 		result, warnings, err := adapter.Adapt([]byte(data), nil)
 		if err != nil {
-			return nil, fmt.Errorf("caddyfile adapt: %w", err)
+			return nil, fmt.Errorf("Caddyfile 适配失败: %w", err)
 		}
 		for _, w := range warnings {
-			logger.Warn("caddyfile adapter warning", "msg", w.Message)
+			logger.Warn("Caddyfile 适配器警告", "msg", w.Message)
 		}
 		return result, nil
 
 	default:
-		return nil, fmt.Errorf("unknown config format")
+		return nil, fmt.Errorf("未知的配置格式")
 	}
 }
 
-// yamlToJSONSafe converts YAML-native types (map[any]any) to JSON-safe types (map[string]any).
+// yamlToJSONSafe 将 YAML 原生类型（map[any]any）转换为 JSON 安全类型
+//（map[string]any）。
 func yamlToJSONSafe(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -160,4 +165,3 @@ func yamlToJSONSafe(v any) any {
 		return v
 	}
 }
-

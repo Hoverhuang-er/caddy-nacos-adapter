@@ -21,11 +21,11 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 )
 
-// GetNacosConfig is a var func pattern.
-// Override in init() to hardcode Nacos connection info without a config file.
+// GetNacosConfig 是 var func 模式，用户可在 init() 中覆写此函数
+// 来硬编码 Nacos 连接信息，无需配置文件。
 var GetNacosConfig func() *NacosConfig
 
-// NacosConfig holds hardcoded Nacos connection parameters for the var func pattern.
+// NacosConfig 包含用于 var func 模式的硬编码 Nacos 连接参数。
 type NacosConfig struct {
 	ServerAddr string
 	ServerPort uint64
@@ -35,7 +35,7 @@ type NacosConfig struct {
 	Group      string
 }
 
-// AdapterConfig is deserialized from nacos.json.
+// AdapterConfig 存储适配器的配置项。
 type AdapterConfig struct {
 	ServerAddr string   `json:"serverAddr"`
 	ServerPort uint64   `json:"serverPort"`
@@ -46,6 +46,7 @@ type AdapterConfig struct {
 	Group      string   `json:"group,omitempty"`
 }
 
+// fillFromNacosConfig 用 var func 提供的值覆盖配置中的空字段。
 func (cfg *AdapterConfig) fillFromNacosConfig(nc *NacosConfig) {
 	if cfg.ServerAddr == "" {
 		cfg.ServerAddr = nc.ServerAddr
@@ -67,7 +68,7 @@ func (cfg *AdapterConfig) fillFromNacosConfig(nc *NacosConfig) {
 	}
 }
 
-// logger is the package-level slog logger outputting to stderr.
+// logger 是包级别的 slog 日志器，输出到 stderr。
 var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 	Level: slog.LevelInfo,
 }))
@@ -76,13 +77,15 @@ func init() {
 	caddyconfig.RegisterAdapter("nacos", Adapter{})
 }
 
-// EnvNacosAuth is the environment variable for base64-encoded Nacos credentials.
-// Format (after decode): ns1:username1:password1;ns2:username2:password2
+// EnvNacosAuth 是存放 base64 编码 Nacos 凭据的环境变量名。
+// 解码后格式: ns1:username1:password1;ns2:username2:password2
 const EnvNacosAuth = "CNA"
 
-// resolveCredentialsFromEnv decodes and parses the CNA env var,
-// returning the username and password for the given namespace.
-func resolveCredentialsFromEnv(namespace string) (username, password string, ok bool) {
+// resolveCredentialsFromEnv 解码并解析 CNA 环境变量，
+// 返回与指定 namespace 匹配的用户名和密码。
+func resolveCredentialsFromEnv(
+	namespace string,
+) (username, password string, ok bool) {
 	encoded := os.Getenv(EnvNacosAuth)
 	if encoded == "" {
 		return "", "", false
@@ -90,7 +93,7 @@ func resolveCredentialsFromEnv(namespace string) (username, password string, ok 
 
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		logger.Warn("failed to decode " + EnvNacosAuth, "error", err)
+		logger.Warn("解码 CNA 环境变量失败", "error", err)
 		return "", "", false
 	}
 
@@ -102,7 +105,7 @@ func resolveCredentialsFromEnv(namespace string) (username, password string, ok 
 		}
 		parts := strings.SplitN(pair, ":", 3)
 		if len(parts) != 3 {
-			logger.Warn("invalid credential entry in "+EnvNacosAuth, "entry", pair)
+			logger.Warn("CNA 环境变量中存在无效的凭据条目", "entry", pair)
 			continue
 		}
 		ns, user, pass := parts[0], parts[1], parts[2]
@@ -114,20 +117,23 @@ func resolveCredentialsFromEnv(namespace string) (username, password string, ok 
 	return "", "", false
 }
 
-// Adapter implements caddyconfig.Adapter for Nacos.
+// Adapter 实现了 caddyconfig.Adapter 接口，用于 Nacos 配置适配。
 type Adapter struct{}
 
 var _ caddyconfig.Adapter = (*Adapter)(nil)
 
-// Adapt reads configuration from Nacos and returns Caddy JSON.
-// Requires CNA environment variable to be set.
-func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconfig.Warning, error) {
-	// CNA env var is mandatory
+// Adapt 从 Nacos 读取配置并返回 Caddy JSON。
+// 必须在环境中设置 CNA 环境变量。
+func (a Adapter) Adapt(body []byte, options map[string]any) (
+	[]byte, []caddyconfig.Warning, error,
+) {
+	// CNA 环境变量为强制项
 	if os.Getenv(EnvNacosAuth) == "" {
-		return nil, nil, fmt.Errorf("CNA environment variable is required: set base64-encoded credentials (format: ns:user:pass;ns:user:pass)")
+		return nil, nil, fmt.Errorf("CNA 环境变量必填: 设置 base64 编码的凭据 " +
+			"(格式: ns:user:pass;ns:user:pass)")
 	}
 
-	// Build config with defaults
+	// 使用默认值构建配置
 	cfg := &AdapterConfig{
 		ServerAddr: "127.0.0.1",
 		ServerPort: 8848,
@@ -135,7 +141,7 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 		DataIDs:    []string{"version", "config"},
 	}
 
-	// Apply var func override (if set)
+	// 应用 var func 覆写（如果已设置）
 	if GetNacosConfig != nil {
 		nc := GetNacosConfig()
 		if nc != nil {
@@ -143,25 +149,27 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 		}
 	}
 
-	// Resolve namespace
+	// 解析 namespace
 	namespace := resolveNamespace(cfg.Namespace)
 
-	// Resolve credentials from CNA env var (mandatory as checked above)
+	// 从 CNA 环境变量中解析凭据（已在前面检查过必须存在）
 	if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
 		cfg.Username = user
 		cfg.Password = pass
 	} else {
-		return nil, nil, fmt.Errorf("CNA environment variable: no credentials found for namespace %q", namespace)
+		return nil, nil, fmt.Errorf(
+			"CNA 环境变量中未找到 namespace %q 对应的凭据", namespace)
 	}
 
-	logger.Info("nacos adapter starting",
-		"server", net.JoinHostPort(cfg.ServerAddr, strconv.Itoa(int(cfg.ServerPort))),
+	logger.Info("Nacos 适配器启动",
+		"server", net.JoinHostPort(
+			cfg.ServerAddr, strconv.Itoa(int(cfg.ServerPort))),
 		"namespace", namespace,
 		"dataIds", cfg.DataIDs,
 		"group", cfg.Group,
 	)
 
-	// Create Nacos config client
+	// 创建 Nacos 配置客户端
 	clientConfig := constant.ClientConfig{
 		NamespaceId:         namespace,
 		TimeoutMs:           5000,
@@ -186,25 +194,25 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 		},
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create nacos config client: %w", err)
+		return nil, nil, fmt.Errorf("创建 Nacos 配置客户端失败: %w", err)
 	}
 
-	// Build initial configuration
+	// 构建初始配置
 	configJSON, err := buildConfig(client, cfg.DataIDs, cfg.Group)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build config from nacos: %w", err)
+		return nil, nil, fmt.Errorf("从 Nacos 构建配置失败: %w", err)
 	}
 
-	// Start hot-reload listeners
+	// 启动热加载监听器
 	startListeners(client, cfg, configJSON)
 
 	return configJSON, nil, nil
 }
 
-// resolveNamespace returns the Nacos namespace based on runtime.GOOS.
-// - "auto" or ""  → runtime.GOOS: windows→"prod", else→"dev"
-// - "public" or "PUBLIC" → "" (Nacos public namespace)
-// - any other value → used as-is
+// resolveNamespace 根据 runtime.GOOS 确定 Nacos namespace。
+// - "auto" 或 ""  → runtime.GOOS: windows→"prod", 其他→"dev"
+// - "public" 或 "PUBLIC" → ""（Nacos 公共 namespace）
+// - 其他值 → 直接使用
 func resolveNamespace(ns string) string {
 	if ns == "" || ns == "auto" {
 		if runtime.GOOS == "windows" {
@@ -218,102 +226,118 @@ func resolveNamespace(ns string) string {
 	return ns
 }
 
-// buildConfig reads all DATA_IDs from Nacos and assembles a Caddy JSON config.
-func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte, error) {
-	// Read version (for logging/tracking)
+// buildConfig 从 Nacos 读取所有 DATA_ID 并组装成 Caddy JSON 配置。
+func buildConfig(
+	client clientInterface, dataIDs []string, group string,
+) ([]byte, error) {
+	// 读取版本号（用于日志记录/追踪）
 	version, _ := getConfigValue(client, "version", group)
 	if version != "" {
-		logger.Info("nacos config version", "version", version)
+		logger.Info("Nacos 配置版本", "version", version)
 	}
 
-	// Build base config
+	// 构建基础配置
 	configData, err := getConfigValue(client, "config", group)
 	if err != nil {
-		return nil, fmt.Errorf("read 'config' from nacos: %w", err)
+		return nil, fmt.Errorf("从 Nacos 读取 'config' 失败: %w", err)
 	}
 
 	config := caddy.Config{}
 	if configData != "" {
 		configJSON, convErr := convertToJSON(configData, logger)
 		if convErr != nil {
-			return nil, fmt.Errorf("convert 'config' to json: %w", convErr)
+			return nil, fmt.Errorf("转换 'config' 为 JSON 失败: %w", convErr)
 		}
 		if err := json.Unmarshal(configJSON, &config); err != nil {
-			return nil, fmt.Errorf("unmarshal 'config' into caddy.Config: %w", err)
+			return nil, fmt.Errorf(
+				"反序列化 'config' 到 caddy.Config 失败: %w", err)
 		}
 	}
 
-	// Merge admin config
-	if data, ok := getOptionalConfigValue(client, "config.admin", group); ok {
+	// 合并 admin 配置
+	if data, ok := getOptionalConfigValue(
+		client, "config.admin", group); ok {
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			if config.Admin == nil {
 				config.Admin = &caddy.AdminConfig{}
 			}
 			if err := json.Unmarshal(jsonData, config.Admin); err != nil {
-				logger.Error("merge config.admin failed", "error", err)
+				logger.Error("合并 config.admin 失败", "error", err)
 			}
 		}
 	}
 
-	// Merge logging config
-	if data, ok := getOptionalConfigValue(client, "config.logging", group); ok {
+	// 合并 logging 配置
+	if data, ok := getOptionalConfigValue(
+		client, "config.logging", group); ok {
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			if config.Logging == nil {
 				config.Logging = &caddy.Logging{}
 			}
 			if err := json.Unmarshal(jsonData, config.Logging); err != nil {
-				logger.Error("merge config.logging failed", "error", err)
+				logger.Error("合并 config.logging 失败", "error", err)
 			}
 		}
 	}
 
-	// Merge storage config
-	if data, ok := getOptionalConfigValue(client, "config.storage", group); ok {
+	// 合并 storage 配置
+	if data, ok := getOptionalConfigValue(
+		client, "config.storage", group); ok {
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			config.StorageRaw = json.RawMessage(jsonData)
 		}
 	}
 
-	// Merge apps config
-	if data, ok := getOptionalConfigValue(client, "config.apps", group); ok {
+	// 合并 apps 配置
+	if data, ok := getOptionalConfigValue(
+		client, "config.apps", group); ok {
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			config.AppsRaw = caddy.ModuleMap{}
 			if err := json.Unmarshal(jsonData, &config.AppsRaw); err != nil {
-				logger.Error("merge config.apps failed", "error", err)
+				logger.Error("合并 config.apps 失败", "error", err)
 			}
 		}
 	}
 
-	// Merge http server routes
+	// 合并 HTTP 服务器路由
 	if config.AppsRaw != nil {
 		if httpRaw, hasHTTP := config.AppsRaw["http"]; hasHTTP {
 			httpApp := caddyhttp.App{}
 			if err := json.Unmarshal(httpRaw, &httpApp); err != nil {
-				logger.Error("parse http app config", "error", err)
+				logger.Error("解析 HTTP 应用配置失败", "error", err)
 			} else {
 				changed := false
 				if httpApp.Servers != nil {
 					for serverKey := range httpApp.Servers {
-						routesKey := "config.apps.http.servers." + serverKey + ".routes"
-						values, _ := getOptionalConfigValues(client, routesKey, group)
+						routesKey := "config.apps.http.servers." +
+							serverKey + ".routes"
+						values, _ := getOptionalConfigValues(
+							client, routesKey, group)
 						if len(values) > 0 {
 							if httpApp.Servers[serverKey].Routes == nil {
-								httpApp.Servers[serverKey].Routes = make([]caddyhttp.Route, 0)
+								httpApp.Servers[serverKey].Routes =
+									make([]caddyhttp.Route, 0)
 							}
 							for _, routeData := range values {
-								jsonData, convErr := convertToJSON(routeData, logger)
+								jsonData, convErr := convertToJSON(
+									routeData, logger)
 								if convErr != nil {
-									logger.Error("convert route to json", "error", convErr, "dataId", routesKey)
+									logger.Error(
+										"转换路由为 JSON 失败",
+										"error", convErr,
+										"dataId", routesKey)
 									continue
 								}
 								var route caddyhttp.Route
-								if err := json.Unmarshal(jsonData, &route); err == nil {
+								if err := json.Unmarshal(
+									jsonData, &route); err == nil {
 									httpApp.Servers[serverKey].Routes = append(
-										httpApp.Servers[serverKey].Routes, route,
+										httpApp.Servers[serverKey].Routes,
+										route,
 									)
 									changed = true
 								}
@@ -323,36 +347,40 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 				}
 				if changed {
 					var warnings []caddyconfig.Warning
-					config.AppsRaw["http"] = caddyconfig.JSON(httpApp, &warnings)
+					config.AppsRaw["http"] = caddyconfig.JSON(
+						httpApp, &warnings)
 					for _, w := range warnings {
-						logger.Warn("re-encode http app", "msg", w.Message)
+						logger.Warn("重新编码 HTTP 应用", "msg", w.Message)
 					}
 				}
 			}
 		}
 	}
 
-
 	return json.Marshal(config)
 }
 
-// clientInterface abstracts the Nacos config client for testability.
+// clientInterface 抽象了 Nacos 配置客户端，便于测试时使用 mock。
 type clientInterface interface {
 	GetConfig(param vo.ConfigParam) (string, error)
 	ListenConfig(param vo.ConfigParam) error
 	CancelListenConfig(param vo.ConfigParam) error
 }
 
-// getConfigValue reads a single config value from Nacos.
-func getConfigValue(client clientInterface, dataID, group string) (string, error) {
+// getConfigValue 从 Nacos 读取单个配置值。
+func getConfigValue(
+	client clientInterface, dataID, group string,
+) (string, error) {
 	return client.GetConfig(vo.ConfigParam{
 		DataId: dataID,
 		Group:  group,
 	})
 }
 
-// getOptionalConfigValue reads a config value, returning false if not found.
-func getOptionalConfigValue(client clientInterface, dataID, group string) (string, bool) {
+// getOptionalConfigValue 读取配置值，未找到时返回 false。
+func getOptionalConfigValue(
+	client clientInterface, dataID, group string,
+) (string, bool) {
 	val, err := client.GetConfig(vo.ConfigParam{
 		DataId: dataID,
 		Group:  group,
@@ -363,11 +391,13 @@ func getOptionalConfigValue(client clientInterface, dataID, group string) (strin
 	return val, true
 }
 
-// getOptionalConfigValues returns all matching config values for a dataID.
-// Note: Nacos SDK returns a single value per dataID. Multi-value pattern
-// matching (like mysql adapter's "ORDER BY CREATED DESC") is not supported
-// in Nacos. We return a single-element slice for interface compatibility.
-func getOptionalConfigValues(client clientInterface, dataID, group string) ([]string, bool) {
+// getOptionalConfigValues 返回某个 dataID 的所有匹配配置值。
+// 注意: Nacos SDK 每个 dataID 只返回一个值。类似 mysql adapter 的
+// "ORDER BY CREATED DESC" 多值匹配模式在 Nacos 中不支持。
+// 返回单元素 slice 是为了接口兼容性。
+func getOptionalConfigValues(
+	client clientInterface, dataID, group string,
+) ([]string, bool) {
 	val, ok := getOptionalConfigValue(client, dataID, group)
 	if !ok {
 		return nil, false
@@ -375,65 +405,79 @@ func getOptionalConfigValues(client clientInterface, dataID, group string) ([]st
 	return []string{val}, true
 }
 
-// mu guards concurrent reloads from multiple Nacos callbacks.
+// mu 保护来自多个 Nacos 回调的并发重载。
 var reloadMu sync.Mutex
 
-// lastConfigJSON caches the last successfully loaded config to avoid redundant reloads.
+// lastConfigJSON 缓存上次成功加载的配置，避免冗余重载。
 var lastConfigJSON []byte
 
-// startListeners registers Nacos push listeners on all DATA_IDs.
-func startListeners(client clientInterface, cfg *AdapterConfig, initialConfig []byte) {
+// startListeners 在所有 DATA_ID 上注册 Nacos 推送监听器。
+func startListeners(
+	client clientInterface,
+	cfg *AdapterConfig,
+	initialConfig []byte,
+) {
 	lastConfigJSON = initialConfig
 
 	for _, dataID := range cfg.DataIDs {
-		did := dataID // capture for closure
+		did := dataID // 在闭包中捕获
 		go func() {
 			err := client.ListenConfig(vo.ConfigParam{
 				DataId: did,
 				Group:  cfg.Group,
-				OnChange: func(namespace, group, dataId, data string) {
-					logger.Info("nacos config changed",
-						"dataId", dataId, "group", group, "namespace", namespace,
+				OnChange: func(
+					namespace, group, dataId, data string,
+				) {
+					logger.Info("Nacos 配置已变更",
+						"dataId", dataId,
+						"group", group,
+						"namespace", namespace,
 					)
 
 					reloadMu.Lock()
 					defer reloadMu.Unlock()
 
-					newConfig, err := buildConfig(client, cfg.DataIDs, cfg.Group)
+					newConfig, err := buildConfig(
+						client, cfg.DataIDs, cfg.Group)
 					if err != nil {
-						logger.Error("rebuild config from nacos failed", "error", err)
+						logger.Error(
+							"从 Nacos 重新构建配置失败",
+							"error", err)
 						return
 					}
 
 					if bytes.Equal(newConfig, lastConfigJSON) {
-						logger.Debug("config unchanged, skipping reload")
+						logger.Debug("配置未变化，跳过重载")
 						return
 					}
 
 					if err := caddy.Load(newConfig, false); err != nil {
-						logger.Error("caddy.Load failed", "error", err)
+						logger.Error("caddy.Load 失败", "error", err)
 						return
 					}
 
 					lastConfigJSON = newConfig
-					logger.Info("caddy config reloaded from nacos",
-						"dataId", dataId, "version", getVersionDisplay(client, cfg.Group),
+					logger.Info("Caddy 配置已从 Nacos 热重载",
+						"dataId", dataId,
+						"version", getVersionDisplay(
+							client, cfg.Group),
 					)
 				},
 			})
 			if err != nil {
-				logger.Error("listen nacos config failed", "dataId", did, "error", err)
+				logger.Error(
+					"监听 Nacos 配置失败",
+					"dataId", did, "error", err)
 			}
 		}()
 	}
-	}
+}
 
-
-// getVersionDisplay reads the version DATA_ID for logging.
+// getVersionDisplay 读取版本 DATA_ID 用于日志显示。
 func getVersionDisplay(client clientInterface, group string) string {
 	v, err := getConfigValue(client, "version", group)
 	if err != nil {
-		logger.Debug("read version for display failed", "error", err)
+		logger.Debug("读取版本号显示失败", "error", err)
 	}
 	return v
 }
