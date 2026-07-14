@@ -42,12 +42,12 @@ jobs:
           [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
           xcaddy build \
             --with github.com/Hoverhuang-er/caddy-nacos-adapter@${GITHUB_REF_NAME} \
-            --output "caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}${EXT}"
+            --output "caddy_wh_nacos_adapter_${{ matrix.os }}_${{ matrix.arch }}${EXT}"
 
       - name: Prepare archive
         shell: bash
         run: |
-          DIR="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          DIR="caddy_wh_nacos_adapter_${{ matrix.os }}_${{ matrix.arch }}"
           BINARY="$DIR"
           [ "${{ matrix.os }}" = "windows" ] && BINARY="${BINARY}.exe"
           mkdir -p "dist/${DIR}"
@@ -58,13 +58,13 @@ jobs:
       - name: Package (tar.gz)
         if: matrix.os != 'windows'
         run: |
-          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          BINARY="caddy_wh_nacos_adapter_${{ matrix.os }}_${{ matrix.arch }}"
           cd dist && tar czf "../${BINARY}.tar.gz" "${BINARY}/"
 
       - name: Package (zip)
         if: matrix.os == 'windows'
         run: |
-          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          BINARY="caddy_wh_nacos_adapter_${{ matrix.os }}_${{ matrix.arch }}"
           cd dist && zip -r "../${BINARY}.zip" "${BINARY}/"
 
       - name: Upload artifact
@@ -72,8 +72,8 @@ jobs:
         with:
           name: ${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            caddy-nacos-adapter_*.tar.gz
-            caddy-nacos-adapter_*.zip
+            caddy_wh_nacos_adapter_*.tar.gz
+            caddy_wh_nacos_adapter_*.zip
           if-no-files-found: error
 
   release:
@@ -115,8 +115,6 @@ jobs:
 
             ### Platforms
 
-            | Platform | Architecture | Format |
-            |----------|:-----------:|:------:|
             | Linux | amd64 | `.tar.gz` |
             | Linux | arm64 | `.tar.gz` |
             | macOS | amd64 | `.tar.gz` |
