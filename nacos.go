@@ -78,9 +78,9 @@ func init() {
 
 // EnvNacosAuth is the environment variable for base64-encoded Nacos credentials.
 // Format (after decode): ns1:username1:password1;ns2:username2:password2
-const EnvNacosAuth = "CADDY_NACOS_AUTH"
+const EnvNacosAuth = "CNA"
 
-// resolveCredentialsFromEnv decodes and parses the CADDY_NACOS_AUTH env var,
+// resolveCredentialsFromEnv decodes and parses the CNA env var,
 // returning the username and password for the given namespace.
 func resolveCredentialsFromEnv(namespace string) (username, password string, ok bool) {
 	encoded := os.Getenv(EnvNacosAuth)
@@ -90,7 +90,7 @@ func resolveCredentialsFromEnv(namespace string) (username, password string, ok 
 
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		logger.Warn("failed to decode "+EnvNacosAuth, "error", err)
+		logger.Warn("failed to decode " + EnvNacosAuth, "error", err)
 		return "", "", false
 	}
 
@@ -120,15 +120,19 @@ type Adapter struct{}
 var _ caddyconfig.Adapter = (*Adapter)(nil)
 
 // Adapt reads configuration from Nacos and returns Caddy JSON.
+// Requires CNA environment variable to be set.
 func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconfig.Warning, error) {
-	// Parse config file
-	cfg := &AdapterConfig{
-		Group: "DEFAULT_GROUP",
+	// CNA env var is mandatory
+	if os.Getenv(EnvNacosAuth) == "" {
+		return nil, nil, fmt.Errorf("CNA environment variable is required: set base64-encoded credentials (format: ns:user:pass;ns:user:pass)")
 	}
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, cfg); err != nil {
-			return nil, nil, fmt.Errorf("parse nacos adapter config: %w", err)
-		}
+
+	// Build config with defaults
+	cfg := &AdapterConfig{
+		ServerAddr: "127.0.0.1",
+		ServerPort: 8848,
+		Group:      "DEFAULT_GROUP",
+		DataIDs:    []string{"version", "config"},
 	}
 
 	// Apply var func override (if set)
@@ -139,37 +143,23 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 		}
 	}
 
-	// Validate required fields
-	if cfg.ServerAddr == "" {
-		return nil, nil, fmt.Errorf("nacos adapter: serverAddr is required (set in config file or GetNacosConfig)")
-	}
-	if cfg.ServerPort == 0 {
-		cfg.ServerPort = 8848
-	}
-	if len(cfg.DataIDs) == 0 {
-		return nil, nil, fmt.Errorf("nacos adapter: at least one dataId is required")
-	}
-
 	// Resolve namespace
 	namespace := resolveNamespace(cfg.Namespace)
+
+	// Resolve credentials from CNA env var (mandatory as checked above)
+	if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
+		cfg.Username = user
+		cfg.Password = pass
+	} else {
+		return nil, nil, fmt.Errorf("CNA environment variable: no credentials found for namespace %q", namespace)
+	}
+
 	logger.Info("nacos adapter starting",
 		"server", net.JoinHostPort(cfg.ServerAddr, strconv.Itoa(int(cfg.ServerPort))),
 		"namespace", namespace,
 		"dataIds", cfg.DataIDs,
 		"group", cfg.Group,
 	)
-
-	// Apply env var credentials for username/password (if not already set)
-	if cfg.Username == "" || cfg.Password == "" {
-		if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
-			if cfg.Username == "" {
-				cfg.Username = user
-			}
-			if cfg.Password == "" {
-				cfg.Password = pass
-			}
-		}
-	}
 
 	// Create Nacos config client
 	clientConfig := constant.ClientConfig{
