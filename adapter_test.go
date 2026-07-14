@@ -6,6 +6,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"log/slog"
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -184,14 +185,20 @@ func (m *mockNacosClient) CancelListenConfig(
 // ---------------------------------------------------------------------------
 
 func TestResolveNamespace(t *testing.T) {
+	// 默认 namespace 取决于 runtime.GOOS
+	defaultNS := "dev"
+	if runtime.GOOS == "windows" {
+		defaultNS = "prod"
+	}
+
 	tests := []struct {
 		name string
 		ns   string
 		want string
 	}{
 		{"自定义 namespace", "custom-ns", "custom-ns"},
-		{"空值默认为 dev", "", "dev"},
-		{"auto 默认为 dev", "auto", "dev"},
+		{"空值默认为 " + defaultNS, "", defaultNS},
+		{"auto 默认为 " + defaultNS, "auto", defaultNS},
 		{"public 映射为空", "public", ""},
 		{"PUBLIC 映射为空", "PUBLIC", ""},
 	}
