@@ -161,10 +161,3 @@ func yamlToJSONSafe(v any) any {
 	}
 }
 
-// FormatNames for logging and error messages.
-var FormatNames = map[ConfigFormat]string{
-	FormatJSON:      "JSON",
-	FormatYAML:      "YAML",
-	FormatTOML:      "TOML",
-	FormatCaddyfile: "Caddyfile",
-}

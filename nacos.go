@@ -1,6 +1,7 @@
 package caddynacos
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -201,7 +202,9 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 			if config.Admin == nil {
 				config.Admin = &caddy.AdminConfig{}
 			}
-			json.Unmarshal(jsonData, config.Admin)
+			if err := json.Unmarshal(jsonData, config.Admin); err != nil {
+				logger.Error("merge config.admin failed", "error", err)
+			}
 		}
 	}
 
@@ -212,7 +215,9 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 			if config.Logging == nil {
 				config.Logging = &caddy.Logging{}
 			}
-			json.Unmarshal(jsonData, config.Logging)
+			if err := json.Unmarshal(jsonData, config.Logging); err != nil {
+				logger.Error("merge config.logging failed", "error", err)
+			}
 		}
 	}
 
@@ -229,7 +234,9 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			config.AppsRaw = caddy.ModuleMap{}
-			json.Unmarshal(jsonData, &config.AppsRaw)
+			if err := json.Unmarshal(jsonData, &config.AppsRaw); err != nil {
+				logger.Error("merge config.apps failed", "error", err)
+			}
 		}
 	}
 
@@ -237,7 +244,9 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 	if config.AppsRaw != nil {
 		if httpRaw, hasHTTP := config.AppsRaw["http"]; hasHTTP {
 			httpApp := caddyhttp.App{}
-			if err := json.Unmarshal(httpRaw, &httpApp); err == nil {
+			if err := json.Unmarshal(httpRaw, &httpApp); err != nil {
+				logger.Error("parse http app config", "error", err)
+			} else {
 				changed := false
 				if httpApp.Servers != nil {
 					for serverKey := range httpApp.Servers {
@@ -274,6 +283,7 @@ func buildConfig(client clientInterface, dataIDs []string, group string) ([]byte
 			}
 		}
 	}
+
 
 	return json.Marshal(config)
 }
@@ -347,9 +357,7 @@ func startListeners(client clientInterface, cfg *AdapterConfig, initialConfig []
 						return
 					}
 
-					// Check if config actually changed
-					if len(newConfig) == len(lastConfigJSON) &&
-						string(newConfig) == string(lastConfigJSON) {
+					if bytes.Equal(newConfig, lastConfigJSON) {
 						logger.Debug("config unchanged, skipping reload")
 						return
 					}
@@ -370,12 +378,14 @@ func startListeners(client clientInterface, cfg *AdapterConfig, initialConfig []
 			}
 		}()
 	}
+	}
 
-	logger.Info("nacos listeners started", "count", len(cfg.DataIDs))
-}
 
 // getVersionDisplay reads the version DATA_ID for logging.
 func getVersionDisplay(client clientInterface, group string) string {
-	v, _ := getConfigValue(client, "version", group)
+	v, err := getConfigValue(client, "version", group)
+	if err != nil {
+		logger.Debug("read version for display failed", "error", err)
+	}
 	return v
 }
