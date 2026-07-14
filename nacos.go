@@ -160,14 +160,20 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 }
 
 // resolveNamespace returns the Nacos namespace based on runtime.GOOS.
-func resolveNamespace(override string) string {
-	if override != "" {
-		return override
+// - "auto" or ""  → runtime.GOOS: windows→"prod", else→"dev"
+// - "public" or "PUBLIC" → "" (Nacos public namespace)
+// - any other value → used as-is
+func resolveNamespace(ns string) string {
+	if ns == "" || ns == "auto" {
+		if runtime.GOOS == "windows" {
+			return "prod"
+		}
+		return "dev"
 	}
-	if runtime.GOOS == "windows" {
-		return "prod"
+	if ns == "public" || ns == "PUBLIC" {
+		return ""
 	}
-	return "dev"
+	return ns
 }
 
 // buildConfig reads all DATA_IDs from Nacos and assembles a Caddy JSON config.

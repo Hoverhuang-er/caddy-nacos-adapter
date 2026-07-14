@@ -29,16 +29,19 @@ func (m *mockNacosClient) CancelListenConfig(param vo.ConfigParam) error {
 
 func TestResolveNamespace(t *testing.T) {
 	tests := []struct {
-		name     string
-		override string
-		want     string
+		name string
+		ns   string
+		want string
 	}{
-		{"override wins", "custom-ns", "custom-ns"},
-		{"empty override defaults", "", "dev"}, // non-windows in test
+		{"custom namespace", "custom-ns", "custom-ns"},
+		{"empty defaults to dev", "", "dev"},
+		{"auto defaults to dev", "auto", "dev"},
+		{"public maps to empty", "public", ""},
+		{"PUBLIC maps to empty", "PUBLIC", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveNamespace(tt.override); got != tt.want {
+			if got := resolveNamespace(tt.ns); got != tt.want {
 				t.Errorf("resolveNamespace() = %v, want %v", got, tt.want)
 			}
 		})
