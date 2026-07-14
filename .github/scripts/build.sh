@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # build.sh — Build Caddy binaries with nacos adapter via xcaddy
-# Called by the release workflow before GoReleaser packaging.
+# Produces binaries at paths expected by GoReleaser prebuilt builder:
+#   dist/caddy-nacos-adapter_{OS}_{ARCH}_v1/caddy-nacos-adapter[.exe]
 set -euo pipefail
 
 VERSION="${1:-v0.0.1}"
@@ -28,9 +29,13 @@ for PLATFORM in "${PLATFORMS[@]}"; do
   EXT=""
   [ "$GOOS" = "windows" ] && EXT=".exe"
 
-  OUTPUT="dist/caddy_${GOOS}_${GOARCH}${EXT}"
+  # GoReleaser prebuilt path convention:
+  # dist/{ProjectName}_{Os}_{Arch}_v1/{ProjectName}[.exe]
+  OUTDIR="dist/caddy-nacos-adapter_${GOOS}_${GOARCH}_v1"
+  mkdir -p "$OUTDIR"
+  OUTPUT="${OUTDIR}/caddy-nacos-adapter${EXT}"
 
-  echo "==> Building for ${GOOS}/${GOARCH}…"
+  echo "==> Building for ${GOOS}/${GOARCH} -> ${OUTPUT}"
   GOOS="$GOOS" GOARCH="$GOARCH" GOEXPERIMENT=jsonv2 CGO_ENABLED=0 \
     xcaddy build \
       --with "${PLUGIN_PATH}" \
@@ -41,4 +46,4 @@ for PLATFORM in "${PLATFORMS[@]}"; do
 done
 
 echo "==> All builds complete."
-ls -lh dist/
+ls -lh dist/*/caddy-nacos-adapter*
