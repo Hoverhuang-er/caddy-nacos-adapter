@@ -2,7 +2,8 @@ package caddynacos
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json" // 保留用于 json.RawMessage（Caddy 类型兼容）
+	jsonv2 "encoding/json/v2"
 	"log/slog"
 	"os"
 	"testing"
@@ -118,11 +119,11 @@ func TestConvertToJSON_YAML(t *testing.T) {
 		t.Fatalf("convertToJSON() error = %v", err)
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 	if parsed["key"] != "value" {
-		t.Errorf("expected key=value, got %v", parsed["key"])
+		t.Errorf("期望 key=value, 得到 %v", parsed["key"])
 	}
 }
 
@@ -133,8 +134,8 @@ func TestConvertToJSON_TOML(t *testing.T) {
 		t.Fatalf("convertToJSON() error = %v", err)
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 }
 
@@ -144,7 +145,7 @@ func TestConvertToJSON_Empty(t *testing.T) {
 		t.Fatalf("convertToJSON() error = %v", err)
 	}
 	if string(result) != "null" && string(result) != "" {
-		t.Logf("empty input produced: %s", string(result))
+		t.Logf("空输入产生: %s", string(result))
 	}
 }
 
@@ -298,7 +299,7 @@ func TestBuildConfig_JSON(t *testing.T) {
 	}
 
 	var parsed caddyConfigStub
-	if err := json.Unmarshal(result, &parsed); err != nil {
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
 		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 }
@@ -318,7 +319,7 @@ func TestBuildConfig_YAML(t *testing.T) {
 	}
 
 	var parsed caddyConfigStub
-	if err := json.Unmarshal(result, &parsed); err != nil {
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
 		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 }
@@ -338,7 +339,7 @@ func TestBuildConfig_Empty(t *testing.T) {
 	}
 
 	var parsed caddyConfigStub
-	if err := json.Unmarshal(result, &parsed); err != nil {
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
 		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 }
@@ -374,7 +375,7 @@ func TestBuildConfig_WithApps(t *testing.T) {
 	}
 
 	var parsed map[string]any
-	if err := json.Unmarshal(result, &parsed); err != nil {
+	if err := jsonv2.Unmarshal(result, &parsed); err != nil {
 		t.Fatalf("结果不是合法 JSON: %v", err)
 	}
 }

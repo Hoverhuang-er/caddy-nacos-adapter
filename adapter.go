@@ -3,7 +3,8 @@ package caddynacos
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json" // 保留用于 json.RawMessage（Caddy 类型兼容）
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"log/slog"
 	"net"
@@ -49,7 +50,8 @@ func detectFormat(data string) ConfigFormat {
 	// 当内容以 { 或 [ 开头时，可能是 JSON、Caddyfile 或 TOML。
 	// 先尝试用 JSON 解析来区分。
 	if first == '{' || first == '[' {
-		if json.Valid([]byte(trimmed)) {
+		var v any
+		if err := jsonv2.Unmarshal([]byte(trimmed), &v); err == nil {
 			return FormatJSON
 		}
 		if first == '{' {
@@ -105,7 +107,7 @@ func convertToJSON(data string, logger *slog.Logger) ([]byte, error) {
 			return []byte{}, nil
 		}
 		var raw json.RawMessage
-		if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		if err := jsonv2.Unmarshal([]byte(data), &raw); err != nil {
 			return nil, fmt.Errorf("无效 JSON: %w", err)
 		}
 		return raw, nil
@@ -116,7 +118,7 @@ func convertToJSON(data string, logger *slog.Logger) ([]byte, error) {
 			return nil, fmt.Errorf("无效 YAML: %w", err)
 		}
 		parsed = yamlToJSONSafe(parsed)
-		result, err := json.Marshal(parsed)
+		result, err := jsonv2.Marshal(parsed)
 		if err != nil {
 			return nil, fmt.Errorf("YAML 转 JSON 序列化失败: %w", err)
 		}
@@ -127,7 +129,7 @@ func convertToJSON(data string, logger *slog.Logger) ([]byte, error) {
 		if _, err := toml.Decode(data, &parsed); err != nil {
 			return nil, fmt.Errorf("无效 TOML: %w", err)
 		}
-		result, err := json.Marshal(parsed)
+		result, err := jsonv2.Marshal(parsed)
 		if err != nil {
 			return nil, fmt.Errorf("TOML 转 JSON 序列化失败: %w", err)
 		}
@@ -229,9 +231,8 @@ func (cfg *AdapterConfig) fillFromNacosConfig(nc *NacosConfig) {
 }
 
 // logger 是包级别的 slog 日志器，输出到 stderr。
-var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
+var logger = slog.New(slog.NewTextHandler(
+	os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 func init() {
 	caddyconfig.RegisterAdapter("nacos", Adapter{})
@@ -289,8 +290,9 @@ func (a Adapter) Adapt(body []byte, options map[string]any) (
 ) {
 	// CNA 环境变量为强制项
 	if os.Getenv(EnvNacosAuth) == "" {
-		return nil, nil, fmt.Errorf("CNA 环境变量必填: 设置 base64 编码的凭据 " +
-			"(格式: ns:user:pass;ns:user:pass)")
+		return nil, nil, fmt.Errorf(
+			"CNA 环境变量必填: 设置 base64 编码的凭据 " +
+				"(格式: ns:user:pass;ns:user:pass)")
 	}
 
 	// 使用默认值构建配置
@@ -408,7 +410,7 @@ func buildConfig(
 		if convErr != nil {
 			return nil, fmt.Errorf("转换 'config' 为 JSON 失败: %w", convErr)
 		}
-		if err := json.Unmarshal(configJSON, &config); err != nil {
+		if err := jsonv2.Unmarshal(configJSON, &config); err != nil {
 			return nil, fmt.Errorf(
 				"反序列化 'config' 到 caddy.Config 失败: %w", err)
 		}
@@ -422,7 +424,8 @@ func buildConfig(
 			if config.Admin == nil {
 				config.Admin = &caddy.AdminConfig{}
 			}
-			if err := json.Unmarshal(jsonData, config.Admin); err != nil {
+			if err := jsonv2.Unmarshal(
+				jsonData, config.Admin); err != nil {
 				logger.Error("合并 config.admin 失败", "error", err)
 			}
 		}
@@ -436,7 +439,8 @@ func buildConfig(
 			if config.Logging == nil {
 				config.Logging = &caddy.Logging{}
 			}
-			if err := json.Unmarshal(jsonData, config.Logging); err != nil {
+			if err := jsonv2.Unmarshal(
+				jsonData, config.Logging); err != nil {
 				logger.Error("合并 config.logging 失败", "error", err)
 			}
 		}
@@ -457,7 +461,8 @@ func buildConfig(
 		jsonData, convErr := convertToJSON(data, logger)
 		if convErr == nil {
 			config.AppsRaw = caddy.ModuleMap{}
-			if err := json.Unmarshal(jsonData, &config.AppsRaw); err != nil {
+			if err := jsonv2.Unmarshal(
+				jsonData, &config.AppsRaw); err != nil {
 				logger.Error("合并 config.apps 失败", "error", err)
 			}
 		}
@@ -467,7 +472,7 @@ func buildConfig(
 	if config.AppsRaw != nil {
 		if httpRaw, hasHTTP := config.AppsRaw["http"]; hasHTTP {
 			httpApp := caddyhttp.App{}
-			if err := json.Unmarshal(httpRaw, &httpApp); err != nil {
+			if err := jsonv2.Unmarshal(httpRaw, &httpApp); err != nil {
 				logger.Error("解析 HTTP 应用配置失败", "error", err)
 			} else {
 				changed := false
@@ -493,7 +498,7 @@ func buildConfig(
 									continue
 								}
 								var route caddyhttp.Route
-								if err := json.Unmarshal(
+								if err := jsonv2.Unmarshal(
 									jsonData, &route); err == nil {
 									httpApp.Servers[serverKey].Routes =
 										append(
@@ -518,7 +523,7 @@ func buildConfig(
 		}
 	}
 
-	return json.Marshal(config)
+	return jsonv2.Marshal(config)
 }
 
 // clientInterface 抽象了 Nacos 配置客户端，便于测试时使用 mock。
