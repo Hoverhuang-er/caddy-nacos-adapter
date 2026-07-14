@@ -9,13 +9,18 @@ permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
+      fail-fast: false
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -23,11 +28,115 @@ jobs:
           go-version: "1.26"
           check-latest: true
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build binary
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOEXPERIMENT: jsonv2
+        run: |
+          EXT=""
+          [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
+          xcaddy build \
+            --with github.com/Hoverhuang-er/caddy-nacos-adapter@${GITHUB_REF_NAME} \
+            --output "caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}${EXT}"
+
+      - name: Prepare archive
+        shell: bash
+        run: |
+          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          [ "${{ matrix.os }}" = "windows" ] && BINARY="${BINARY}.exe"
+          mkdir -p "dist/${BINARY}"
+          cp "$BINARY" "dist/${BINARY}/"
+          cp README.md "dist/${BINARY}/"
+          echo "Caddy Nacos Config Adapter ${GITHUB_REF_NAME}" > "dist/${BINARY}/VERSION"
+
+      - name: Package (tar.gz)
+        if: matrix.os != 'windows'
+        run: |
+          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          cd dist && tar czf "../${BINARY}.tar.gz" "${BINARY}/"
+
+      - name: Package (zip)
+        if: matrix.os == 'windows'
+        run: |
+          BINARY="caddy-nacos-adapter_${{ matrix.os }}_${{ matrix.arch }}"
+          cd dist && zip -r "../${BINARY}.zip" "${BINARY}/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            caddy-nacos-adapter_*.tar.gz
+            caddy-nacos-adapter_*.zip
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect archives
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+          echo "=== Release assets ==="
+          ls -lh release-assets/
+
+      - name: Generate checksums
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum * > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Caddy Nacos Config Adapter ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## Caddy Nacos Config Adapter ${{ github.ref_name }}
+
+            Pre-built Caddy binaries with the Nacos config adapter pre-loaded.
+
+            ### Platforms
+
+            | Platform | Architecture | Format |
+            |----------|:-----------:|:------:|
+            | Linux | amd64 | `.tar.gz` |
+            | Linux | arm64 | `.tar.gz` |
+            | macOS | amd64 | `.tar.gz` |
+            | macOS | arm64 | `.tar.gz` |
+            | Windows | amd64 | `.zip` |
+            | Windows | arm64 | `.zip` |
+
+            ### Install via xcaddy
+
+            ```
+            xcaddy build --with github.com/Hoverhuang-er/caddy-nacos-adapter@${{ github.ref_name }}
+            ```
+
+            ### Usage
+
+            ```bash
+            export CNA="base64_encoded_credentials"
+            ./caddy run --adapter nacos --config ./nacos.json
+            ```
+
+            See the [README](https://github.com/Hoverhuang-er/caddy-nacos-adapter#readme) for full documentation.
+          files: release-assets/*
+          draft: false
+          prerelease: false
