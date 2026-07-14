@@ -204,7 +204,6 @@ Each DATA_ID supports auto-detected format: JSON, YAML, TOML, or Caddyfile.
 
 The adapter registers Nacos push listeners on all DATA_IDs. When Nacos detects a config change, it pushes the new value, the adapter rebuilds the Caddy config, and calls `caddy.Load()` — no restart, no downtime.
 
-The reload is protected by a mutex to prevent concurrent reloads from overlapping callbacks.
 
 ---
 
@@ -242,9 +241,11 @@ xcaddy build --with github.com/Hoverhuang-er/caddy-nacos-adapter
 ./caddy run --adapter nacos
 ```
 
----
+The adapter registers Nacos push listeners on all DATA_IDs. When Nacos detects a config change, it pushes the new value, the adapter rebuilds the Caddy config, and calls `caddy.Load()` — no restart, no downtime.
 
-## Downloads
+For multi-tenant deployments (multiple Nacos sources), each source's `OnChange` callback sends a signal to a buffered channel (`reloadCh`), and a dedicated goroutine processes reloads sequentially. See the [Multi-Tenant Architecture](#architecture) section for details.
+
+---
 
 Pre-built Caddy binaries with the nacos adapter are available for each [release](https://github.com/Hoverhuang-er/caddy-nacos-adapter/releases):
 
@@ -313,6 +314,8 @@ The release workflow builds binaries for all 6 platforms and creates a GitHub Re
 
 ## Architecture
 
+### Overview
+
 ```
 ┌─────────────────────┐     ┌──────────────────────┐     ┌──────────────┐
 │  Caddy (xcaddy)     │────▶│  nacos adapter        │────▶│  Nacos       │
@@ -328,7 +331,40 @@ The adapter registers as `"nacos"` with Caddy's config adapter system. On startu
 4. Assembles the full Caddy JSON config
 5. Registers push listeners for hot-reload
 
----
+### Multi-Tenant Hot-Reload (Channel-Based)
+
+When running multiple Nacos sources (multi-tenant), each source's `OnChange` callback sends a reload signal through a **buffered channel** (`reloadCh`). A dedicated goroutine reads from the channel and processes reloads sequentially — no mutex contention, no overlapping reloads.
+
+```
+   ┌──────────────────────────────┐
+   │  Nacos OnChange callback #1  │──┐
+   └──────────────────────────────┘  │
+                                     │  select { reloadCh <- struct{}{} }
+   ┌──────────────────────────────┐  │
+   │  Nacos OnChange callback #2  │──┤  (non-blocking, drops if full)
+   └──────────────────────────────┘  │
+                                     │
+   ┌──────────────────────────────┐  │
+   │  Nacos OnChange callback #N  │──┘
+   └──────────────────────────────┘
+            │
+            ▼
+     ┌──────────────┐   cap = len(sources)
+     │  reloadCh    │   (buffered channel)
+     └──────┬───────┘
+            │  range
+            ▼
+     ┌──────────────────┐
+     │  reload goroutine │── buildAndMergeConfigs → caddy.Load
+     └──────────────────┘    (serial, dedup by bytes.Equal)
+```
+
+**Key design points:**
+
+- **`cap = len(sources)`** — one buffer slot per Nacos source, preventing backpressure from blocking Nacos push callbacks
+- **Non-blocking send** (`select` with `default`) — excess signals are dropped when a reload is already queued, avoiding redundant rebuilds
+- **Dedicated goroutine** (`range reloadCh`) — processes one reload at a time, rebuilding all sources and merging via `buildAndMergeConfigs`
+- **Dedup** (`bytes.Equal`) — compares rebuilt config against `lastConfigJSON` to skip no-op reloads
 
 ## Compatibility
 
