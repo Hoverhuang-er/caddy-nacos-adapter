@@ -37,21 +37,22 @@ xcaddy build --with github.com/Hoverhuang-er/caddy-nacos-adapter
 ```
 
 Or download a pre-built binary from [Releases](https://github.com/Hoverhuang-er/caddy-nacos-adapter/releases).
+### 2. Prepare configuration
 
-### 2. Set credentials
+You need two things: a **config file** (nacos.json) with Nacos server info, and **credentials** to authenticate with Nacos. These are independent — use either or both of the options below.
 
-Set the `CNA` environment variable with base64-encoded Nacos credentials:
+#### Option A: nacos.json + CNA env var (recommended)
+
+Create a `nacos.json` file with server address, ports, and DATA_IDs. Credentials go into the `CNA` environment variable:
 
 ```bash
+# CNA: base64-encoded per-namespace credentials
 # Format: namespace1:username1:password1;namespace2:username2:password2
 export CNA=$(echo -n "dev:admin:nacos;prod:admin:nacos123" | base64)
 ```
 
-### 3. Prepare nacos.json
-
-Create a `nacos.json` file (passed to Caddy as config):
-
 ```json
+// nacos.json
 {
   "serverAddr": "127.0.0.1",
   "serverPort": 8848,
@@ -61,26 +62,57 @@ Create a `nacos.json` file (passed to Caddy as config):
 }
 ```
 
-### 4. Run
+#### Option B: nacos.json with inline credentials
+
+```json
+// nacos.json - all config in one file, no env vars needed
+[
+  {
+    "serverAddr": "127.0.0.1",
+    "serverPort": 8848,
+    "namespace": "dev",
+    "username": "admin",
+    "password": "nacos",
+    "dataIds": ["version", "config"],
+    "group": "DEFAULT_GROUP"
+  }
+]
+```
+
+#### Option C: Environment variables only (no nacos.json)
+
+```bash
+export CADDY_NACOS="127.0.0.1:8848:version,config:DEFAULT_GROUP:dev:admin:nacos"
+caddy run --adapter nacos
+```
+
+Or use the granular env vars:
+
+```bash
+export CNA=$(echo -n "dev:admin:nacos" | base64)
+export CADDY_NACOS_USERNAME="admin"
+export CADDY_NACOS_PASSWORD="nacos"
+```
+
+### 3. Run
 
 ```bash
 caddy run --adapter nacos --config ./nacos.json
+# (omit --config when using CADDY_NACOS env var or hardcoded config)
 ```
-
----
 
 ## Configuration
 
 ### Environment Variables
 
 | Variable | Required | Description |
-|----------|----------|-------------|
-| `CNA` | **Yes** | Base64-encoded credentials `ns:user:pass;ns:user:pass` |
-| `CADDY_NACOS_SERVER_ADDR` | No | Override Nacos server address |
-| `CADDY_NACOS_SERVER_PORT` | No | Override Nacos server port |
-| `CADDY_NACOS_NAMESPACE` | No | Override namespace |
-| `CADDY_NACOS_GROUP` | No | Override group |
-| `CADDY_NACOS_DATA_IDS` | No | Override comma-separated DATA_IDs |
+|----------|:--------:|-------------|
+| `CNA` | Conditional | Base64 per-namespace credentials `ns:user:pass;ns:user:pass`. Not needed with inline creds or `CADDY_NACOS`. |
+| `CADDY_NACOS` | Conditional | Full source config `addr:port:dataIds:group:ns:user:pass`. Multiple sources with `;`. |
+| `CADDY_NACOS_NS_USERNAME` | Conditional | Per-namespace usernames `ns1:user1;ns2:user2`. |
+| `CADDY_NACOS_NS_PASSWORD` | Conditional | Per-namespace passwords `ns1:pass1;ns2:pass2`. |
+| `CADDY_NACOS_USERNAME` | Conditional | Global username fallback for all namespaces. |
+| `CADDY_NACOS_PASSWORD` | Conditional | Global password fallback for all namespaces. |
 
 ### nacos.json Fields
 
