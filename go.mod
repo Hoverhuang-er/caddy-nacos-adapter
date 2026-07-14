@@ -1,4 +1,4 @@
-module github.com/hxgm/caddynacos
+module github.com/Hoverhuang-er/caddy-nacos-adapter
 
 go 1.26
 
