@@ -1,7 +1,9 @@
 package caddynacos
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -46,6 +48,81 @@ func TestResolveNamespace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCredentialsFromEnv(t *testing.T) {
+	// Save and restore env var
+	orig := os.Getenv(EnvNacosAuth)
+	defer os.Setenv(EnvNacosAuth, orig)
+
+	t.Run("no env var", func(t *testing.T) {
+		os.Unsetenv(EnvNacosAuth)
+		u, p, ok := resolveCredentialsFromEnv("dev")
+		if ok {
+			t.Errorf("expected ok=false, got %v", ok)
+		}
+		if u != "" || p != "" {
+			t.Errorf("expected empty, got %q %q", u, p)
+		}
+	})
+
+	t.Run("match dev namespace", func(t *testing.T) {
+		// dev:devuser:devpass;prod:produser:prodpass
+		os.Setenv(EnvNacosAuth, "ZGV2OmRldnVzZXI6ZGV2cGFzcztwcm9kOnByb2R1c2VyOnByb2RwYXNz")
+		u, p, ok := resolveCredentialsFromEnv("dev")
+		if !ok {
+			t.Fatalf("expected ok=true, got false")
+		}
+		if u != "devuser" || p != "devpass" {
+			t.Errorf("expected devuser/devpass, got %q %q", u, p)
+		}
+	})
+
+	t.Run("match prod namespace", func(t *testing.T) {
+		os.Setenv(EnvNacosAuth, "ZGV2OmRldnVzZXI6ZGV2cGFzcztwcm9kOnByb2R1c2VyOnByb2RwYXNz")
+		u, p, ok := resolveCredentialsFromEnv("prod")
+		if !ok {
+			t.Fatalf("expected ok=true, got false")
+		}
+		if u != "produser" || p != "prodpass" {
+			t.Errorf("expected produser/prodpass, got %q %q", u, p)
+		}
+	})
+
+	t.Run("no match for namespace", func(t *testing.T) {
+		os.Setenv(EnvNacosAuth, "ZGV2OmRldnVzZXI6ZGV2cGFzcw==")
+		u, p, ok := resolveCredentialsFromEnv("staging")
+		if ok {
+			t.Errorf("expected ok=false, got %v", ok)
+		}
+		if u != "" || p != "" {
+			t.Errorf("expected empty, got %q %q", u, p)
+		}
+	})
+
+	t.Run("invalid base64", func(t *testing.T) {
+		os.Setenv(EnvNacosAuth, "not-valid-base64!!!")
+		u, p, ok := resolveCredentialsFromEnv("dev")
+		if ok {
+			t.Errorf("expected ok=false, got %v", ok)
+		}
+		if u != "" || p != "" {
+			t.Errorf("expected empty, got %q %q", u, p)
+		}
+	})
+
+	t.Run("malformed entry (no colon)", func(t *testing.T) {
+		// "dev:user" has only 2 parts, not 3
+		encoded := base64.StdEncoding.EncodeToString([]byte("dev:user"))
+		os.Setenv(EnvNacosAuth, encoded)
+		u, p, ok := resolveCredentialsFromEnv("dev")
+		if ok {
+			t.Errorf("expected ok=false, got %v", ok)
+		}
+		if u != "" || p != "" {
+			t.Errorf("expected empty, got %q %q", u, p)
+		}
+	})
 }
 
 func TestBuildConfig_JSON(t *testing.T) {

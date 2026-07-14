@@ -2,6 +2,7 @@ package caddynacos
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/caddyserver/caddy/v2"
@@ -74,6 +76,44 @@ func init() {
 	caddyconfig.RegisterAdapter("nacos", Adapter{})
 }
 
+// EnvNacosAuth is the environment variable for base64-encoded Nacos credentials.
+// Format (after decode): ns1:username1:password1;ns2:username2:password2
+const EnvNacosAuth = "CADDY_NACOS_AUTH"
+
+// resolveCredentialsFromEnv decodes and parses the CADDY_NACOS_AUTH env var,
+// returning the username and password for the given namespace.
+func resolveCredentialsFromEnv(namespace string) (username, password string, ok bool) {
+	encoded := os.Getenv(EnvNacosAuth)
+	if encoded == "" {
+		return "", "", false
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		logger.Warn("failed to decode "+EnvNacosAuth, "error", err)
+		return "", "", false
+	}
+
+	pairs := strings.Split(string(decoded), ";")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, ":", 3)
+		if len(parts) != 3 {
+			logger.Warn("invalid credential entry in "+EnvNacosAuth, "entry", pair)
+			continue
+		}
+		ns, user, pass := parts[0], parts[1], parts[2]
+		if ns == namespace {
+			return user, pass, true
+		}
+	}
+
+	return "", "", false
+}
+
 // Adapter implements caddyconfig.Adapter for Nacos.
 type Adapter struct{}
 
@@ -118,6 +158,18 @@ func (a Adapter) Adapt(body []byte, options map[string]any) ([]byte, []caddyconf
 		"dataIds", cfg.DataIDs,
 		"group", cfg.Group,
 	)
+
+	// Apply env var credentials for username/password (if not already set)
+	if cfg.Username == "" || cfg.Password == "" {
+		if user, pass, ok := resolveCredentialsFromEnv(namespace); ok {
+			if cfg.Username == "" {
+				cfg.Username = user
+			}
+			if cfg.Password == "" {
+				cfg.Password = pass
+			}
+		}
+	}
 
 	// Create Nacos config client
 	clientConfig := constant.ClientConfig{
