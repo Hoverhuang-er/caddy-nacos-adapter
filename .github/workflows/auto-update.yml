@@ -1,13 +1,13 @@
-name: Release
+name: Auto Follow Caddy Releases
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       caddy_version:
-        description: "Caddy version to build with (e.g., v2.11.4). Default uses adapter's own version."
+        description: "Caddy version to build with (e.g., v2.11.4). Leave empty for latest."
         required: false
         type: string
 
@@ -15,14 +15,63 @@ permissions:
   contents: write
 
 jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+      should_release: ${{ steps.check-caddy.outputs.should_release }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest Caddy version
+        id: caddy-latest
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.caddy_version }}" ]; then
+            echo "version=${{ inputs.caddy_version }}" >> $GITHUB_OUTPUT
+          else
+            # Fetch latest Caddy release tag from GitHub
+            CADDY_VERSION=$(curl -sL https://api.github.com/repos/caddyserver/caddy/releases/latest | jq -r '.tag_name')
+            echo "version=${CADDY_VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if already released
+        id: check-caddy
+        shell: bash
+        run: |
+          CADDY_VER="${{ steps.caddy-latest.outputs.version }}"
+          TAG="caddy-${CADDY_VER}"
+
+          echo "caddy_version=${CADDY_VER}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+          # Check if tag already exists (release already built for this Caddy version)
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists. Skipping."
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "New Caddy version ${CADDY_VER}. Will build release ${TAG}."
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set tag output
+        id: set-tag
+        run: echo "tag=${{ steps.check-caddy.outputs.tag }}" >> $GITHUB_OUTPUT
+
   build:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    needs: [check-and-release]
+    if: needs.check-and-release.outputs.should_release == 'true'
     strategy:
       matrix:
         os: [linux, darwin, windows]
         arch: [amd64, arm64]
       fail-fast: false
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -44,11 +93,11 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           GOEXPERIMENT: jsonv2
         run: |
+          CADDY_VER="${{ needs.check-and-release.outputs.caddy_version }}"
           EXT=""
           [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
-          CADDY_VER="${{ inputs.caddy_version }}"
-          xcaddy build ${CADDY_VER} \
-            --with github.com/Hoverhuang-er/caddy-nacos-adapter@${GITHUB_REF_NAME} \
+          xcaddy build "$CADDY_VER" \
+            --with github.com/Hoverhuang-er/caddy-nacos-adapter@${{ needs.check-and-release.outputs.tag }} \
             --output "caddy_wh_nacos_adapter_${{ matrix.os }}_${{ matrix.arch }}${EXT}"
 
       - name: Prepare archive
@@ -60,7 +109,7 @@ jobs:
           mkdir -p "dist/${DIR}"
           cp "$BINARY" "dist/${DIR}/"
           cp README.md "dist/${DIR}/"
-          echo "Caddy Nacos Config Adapter ${GITHUB_REF_NAME}" > "dist/${DIR}/VERSION"
+          echo "Caddy Nacos Config Adapter with Caddy ${{ needs.check-and-release.outputs.caddy_version }}" > "dist/${DIR}/VERSION"
 
       - name: Package (tar.gz)
         if: matrix.os != 'windows'
@@ -85,7 +134,8 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [check-and-release, build]
+    if: needs.check-and-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -113,15 +163,20 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Caddy Nacos Config Adapter ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: Caddy ${{ needs.check-and-release.outputs.caddy_version }} + Nacos Adapter
+          tag_name: ${{ needs.check-and-release.outputs.tag }}
+          target_commitish: main
           body: |
-            ## Caddy Nacos Config Adapter ${{ github.ref_name }}
+            ## Caddy Nacos Config Adapter — Caddy ${{ needs.check-and-release.outputs.caddy_version }}
+
+            Automatic release following [Caddy Server ${{ needs.check-and-release.outputs.caddy_version }}](https://github.com/caddyserver/caddy/releases/tag/${{ needs.check-and-release.outputs.caddy_version }}).
 
             Pre-built Caddy binaries with the Nacos config adapter pre-loaded.
 
             ### Platforms
 
+            | Platform | Architecture | Format |
+            |----------|:-----------:|:------:|
             | Linux | amd64 | `.tar.gz` |
             | Linux | arm64 | `.tar.gz` |
             | macOS | amd64 | `.tar.gz` |
@@ -132,7 +187,7 @@ jobs:
             ### Install via xcaddy
 
             ```
-            xcaddy build --with github.com/Hoverhuang-er/caddy-nacos-adapter@${{ github.ref_name }}
+            xcaddy build ${{ needs.check-and-release.outputs.caddy_version }} --with github.com/Hoverhuang-er/caddy-nacos-adapter@${{ needs.check-and-release.outputs.tag }}
             ```
 
             ### Usage
